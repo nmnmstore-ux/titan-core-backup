@@ -1,0 +1,953 @@
+#[cfg(target_os = "linux")]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
+mod types;
+mod orderbook;
+mod matching;
+mod dot;
+mod tee;
+mod fix;
+mod metrics;
+mod numa;
+mod snapshot;
+mod cloak;
+mod wal;
+mod consensus;
+mod crdt;
+mod wasm_engine;
+mod encrypted;
+mod memory;
+mod anti_debug;
+mod cloud;
+mod kyc;
+mod pipeline;
+mod auth;
+mod dashboard;
+mod sovereign;
+mod counterparty;
+mod iso20022;
+mod sovereign_protocol;
+mod universal_bridge;
+mod llm_sidecar;
+mod backup;
+mod sovereign_fortress;
+mod circuit_breaker;
+mod io;
+mod pg;
+mod market_data;
+mod token_auth;
+mod shariah;
+mod ai_agent;
+
+mod gatekeeper;
+mod liquidation;
+mod handlers;
+
+
+use gatekeeper::*;
+use handlers::*;
+
+
+use axum::{
+    body::Body,
+    extract::{Path, State, WebSocketUpgrade},
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{self, Next},
+    response::{Html, Json, IntoResponse, Redirect, Response},
+    routing::{delete, get, post},
+    Router,
+};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+use tokio::sync::broadcast;
+use tracing::{info, warn};
+use uuid::Uuid;
+use types::*;
+use orderbook::OrderBookManager;
+use dot::DOTEngine;
+use tee::{HardwareEnclave, TEEEnclave};
+use fix::FIXGateway;
+use metrics::MetricsCollector;
+use numa::{CPUAffinity, NUMADistributor, AffinityThreadPool};
+use cloak::{SovereignKillSwitch, NodeCloakingProtocol, ThreatLevel};
+use wal::WriteAheadLog;
+use consensus::DAGConsensus;
+use crdt::CRDTReplica;
+use wasm_engine::{WasmMatchHook, NoopHook};
+use cloud::{CloudOrchestrator, BillingMeter, ApiKeyManager, Tenant};
+use cloud::tenant::Tier;
+use kyc::ComplianceGateway;
+use pipeline::{DualPipeline, TradePayload};
+use sovereign::SovereignIdentityStore;
+use sovereign_protocol::SovereignProtocol;
+use universal_bridge::UniversalBridge;
+use llm_sidecar::LlmSidecar;
+use backup::EncryptedBackup;
+use sovereign_fortress::SovereignFortress;
+use circuit_breaker::CircuitBreaker;
+use pg::PgStore;
+use counterparty::CounterpartyVisibilityStore;
+use snapshot::{BookSnapshot, OrderSnapshot};
+use shariah::ShariahFilter;
+use ai_agent::AiAgent;
+#[derive(Clone)]
+pub struct AppState {
+    pub books: Arc<OrderBookManager>,
+    pub dot: Arc<DOTEngine>,
+    pub tee: Arc<TEEEnclave>,
+    pub fix: Arc<RwLock<FIXGateway>>,
+    pub numa: Arc<CPUAffinity>,
+    pub pool: Arc<AffinityThreadPool>,
+    pub metrics: Arc<MetricsCollector>,
+    pub kill_switch: Arc<SovereignKillSwitch>,
+    pub wal: Arc<WriteAheadLog>,
+    pub consensus: Arc<DAGConsensus>,
+    pub crdt: Arc<CRDTReplica>,
+    pub wasm_hook: Arc<dyn WasmMatchHook>,
+    pub orchestrator: Arc<CloudOrchestrator>,
+    pub billing: Arc<BillingMeter>,
+    pub api_keys: Arc<ApiKeyManager>,
+    pub compliance: Arc<ComplianceGateway>,
+    pub pipeline: Arc<DualPipeline>,
+    pub auth_gateway: Arc<auth::AuthGateway>,
+    pub payment_processor: Arc<cloud::PaymentProcessor>,
+    pub sovereign_store: Arc<SovereignIdentityStore>,
+    pub counterparty_store: Arc<CounterpartyVisibilityStore>,
+    pub regulator_pubkey_hex: String,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub iso20022_queue: Arc<iso20022::Iso20022Queue>,
+    pub sovereign_protocol: Arc<SovereignProtocol>,
+    pub universal_bridge: Arc<UniversalBridge>,
+    pub llm_sidecar: Arc<LlmSidecar>,
+    pub backup: Arc<EncryptedBackup>,
+    pub fortress: Arc<SovereignFortress>,
+    pub circuit_breaker: Arc<CircuitBreaker>,
+    pub pg: Arc<PgStore>,
+    pub trade_tx: broadcast::Sender<Trade>,
+    pub shutdown: Arc<AtomicBool>,
+    pub market_data: Arc<market_data::MarketDataStream>,
+    pub token_auth: Arc<token_auth::TokenAuth>,
+    pub audit_log: Arc<AuditLog>,
+    pub shariah_filter: Arc<parking_lot::RwLock<ShariahFilter>>,
+    pub webhooks: Arc<dashmap::DashMap<Uuid, Vec<String>>>,
+    pub ai_agent: Arc<AiAgent>,
+}
+
+#[derive(Clone)]
+pub struct RateLimiter {
+    requests: Arc<dashmap::DashMap<String, (u64, std::time::Instant)>>,
+    limits: Arc<dashmap::DashMap<&'static str, u64>>,
+}
+
+impl RateLimiter {
+    pub(crate) fn new() -> Self {
+        let limits = dashmap::DashMap::new();
+        limits.insert("public", 1_000_000);
+        limits.insert("auth", 1_000_000);
+        limits.insert("trading", 10_000_000);
+        limits.insert("admin", 1_000_000);
+        limits.insert("webhook", 1_000_000);
+        limits.insert("default", 1_000_000);
+        Self {
+            requests: Arc::new(dashmap::DashMap::new()),
+            limits: Arc::new(limits),
+        }
+    }
+
+    pub(crate) fn check(&self, ip: &str, tier: &str) -> bool {
+        let max_per_sec = self.limits.get(tier).map(|r| *r).unwrap_or(100);
+        let key = format!("{}:{}", tier, ip);
+        let now = std::time::Instant::now();
+        if let Some(mut entry) = self.requests.get_mut(&key) {
+            let (count, window_start) = entry.value();
+            if now.duration_since(*window_start).as_secs() >= 1 {
+                *entry = (1, now);
+                true
+            } else if *count < max_per_sec {
+                *entry = (count + 1, *window_start);
+                true
+            } else {
+                false
+            }
+        } else {
+            self.requests.insert(key, (1, now));
+            true
+        }
+    }
+}
+
+// Audit log entry
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditEntry {
+    pub timestamp: i64,
+    pub tenant_id: Option<Uuid>,
+    pub action: String,
+    pub resource: String,
+    pub ip: String,
+    pub status: u16,
+}
+
+pub struct AuditLog {
+    entries: Arc<parking_lot::RwLock<Vec<AuditEntry>>>,
+    max_entries: usize,
+}
+
+impl AuditLog {
+    pub(crate) fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Arc::new(parking_lot::RwLock::new(Vec::with_capacity(max_entries))),
+            max_entries,
+        }
+    }
+
+    pub(crate) fn log(&self, entry: AuditEntry) {
+        let mut entries = self.entries.write();
+        if entries.len() >= self.max_entries {
+            entries.remove(0);
+        }
+        entries.push(entry);
+    }
+
+    pub(crate) fn recent(&self, limit: usize) -> Vec<AuditEntry> {
+        let entries = self.entries.read();
+        let start = entries.len().saturating_sub(limit);
+        entries[start..].to_vec()
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter("the_bridge=info,the_bridge_engine=trace")
+        .json()
+        .init();
+
+    if let Err(e) = anti_debug::run_integrity_checks() {
+        warn!("Security integrity check failed: {}", e);
+        if anti_debug::is_compromised() {
+            panic!("System compromised — refusing to start");
+        }
+    }
+
+    if let Err(e) = memory::lock_memory() {
+        warn!("Memory locking failed (non-fatal): {}", e);
+    }
+    info!("Memory locked — no swapping of secrets");
+
+    info!("THE-BRIDGE Matching Engine v1.0.0 — Production Mode");
+
+    // ===== Regulator Keypair Setup =====
+    let (_regulator_secret_hex, regulator_pubkey_hex) = {
+        let env_key = std::env::var("THE_BRIDGE_REGULATOR_SECRET");
+        match env_key {
+            Ok(hex_key) if hex_key.len() == 64 => {
+                let pub_bytes = {
+                    let secret_bytes = hex::decode(&hex_key)
+                        .expect("THE_BRIDGE_REGULATOR_SECRET must be hex");
+                    let arr: [u8; 32] = secret_bytes.try_into()
+                        .expect("THE_BRIDGE_REGULATOR_SECRET must be 32 bytes");
+                    let public = x25519_dalek::x25519(arr, x25519_dalek::X25519_BASEPOINT_BYTES);
+                    hex::encode(public)
+                };
+                (hex_key, pub_bytes)
+            }
+            _ => {
+                let (sec, pubk) = sovereign::generate_regulator_keypair_hex();
+                warn!("No THE_BRIDGE_REGULATOR_SECRET env var — generated ephemeral keypair");
+                warn!("Regulator secret (save for production): {}", sec);
+                (sec, pubk)
+            }
+        }
+    };
+
+    let sovereign_store = Arc::new(
+        SovereignIdentityStore::new(&regulator_pubkey_hex)
+            .expect("Sovereign identity store init")
+    );
+    let counterparty_store = Arc::new(CounterpartyVisibilityStore::new());
+    info!("Sovereign Layer 3 + Counterparty Layer 2 active");
+
+    let cpu_affinity = CPUAffinity::new();
+    info!("CPU cores detected: {}", cpu_affinity.core_count);
+    let control_cores = (cpu_affinity.core_count.saturating_sub(1)).max(1) as usize;
+    let thread_pool = AffinityThreadPool::new(4, true);
+
+    // Isolate core 0 for the data plane (matching + pipeline)
+    let _ = CPUAffinity::pin_to_core(0);
+    info!("Data plane pinned to core 0");
+
+    let pairs = vec!["USD/EUR", "USD/EGP", "USD/SAR", "USD/AED", "USD/GBP", "EUR/EGP"];
+    let assigned = NUMADistributor::distribute(
+        &pairs.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+    );
+    info!("NUMA distribution: {} books across {} nodes", pairs.len(), assigned.len());
+
+    let tee = Arc::new(TEEEnclave::new());
+
+    let node_id = std::env::var("THE_BRIDGE_NODE_ID").unwrap_or_else(|_| "engine-1".to_string());
+    let peer_list = std::env::var("THE_BRIDGE_PEERS").unwrap_or_default();
+    let peers: Vec<String> = if peer_list.is_empty() {
+        vec![]
+    } else {
+        peer_list.split(',').map(|s| s.trim().to_string()).collect()
+    };
+
+    let replica_list = std::env::var("THE_BRIDGE_REPLICAS").unwrap_or_default();
+    let replicas: Vec<String> = if replica_list.is_empty() {
+        vec![]
+    } else {
+        replica_list.split(',').map(|s| s.trim().to_string()).collect()
+    };
+
+    let wal_dir = std::env::var("THE_BRIDGE_WAL_DIR")
+        .unwrap_or_else(|_| "/tmp/the-bridge/wal".to_string());
+    let wal = Arc::new(WriteAheadLog::new(
+        &node_id,
+        PathBuf::from(&wal_dir).as_path(),
+        replicas,
+    ).expect("WAL initialization failed — check disk permissions"));
+
+    info!("WAL initialized at {}", wal_dir);
+
+    let recovered = wal.recover().expect("WAL recovery failed");
+    if !recovered.is_empty() {
+        info!(count = recovered.len(), "WAL: recovered past operations");
+    }
+
+    let pg = match std::env::var("DATABASE_URL") {
+        Ok(url) => {
+            match tokio::runtime::Runtime::new().expect("Failed to create temp runtime").block_on(async { PgStore::new(&url).await }) {
+                Ok(store) => {
+                    info!("PostgreSQL persistence active");
+                    Arc::new(store)
+                }
+                Err(e) => {
+                    warn!(error = %e, "PostgreSQL initialization failed — running without persistence");
+                    Arc::new(PgStore::disabled())
+                }
+            }
+        }
+        Err(_) => {
+            info!("DATABASE_URL not set — running without PostgreSQL persistence");
+            Arc::new(PgStore::disabled())
+        }
+    };
+
+    let consensus = {
+        let signing_key_bytes = tee.signing_key_bytes();
+        Arc::new(DAGConsensus::new(&node_id, peers, &signing_key_bytes))
+    };
+    let crdt = Arc::new(CRDTReplica::new(&node_id));
+    info!("DAG consensus configured");
+
+    let metrics = Arc::new(MetricsCollector::new());
+    let book_manager = Arc::new(
+        OrderBookManager::new()
+            .with_counterparty_visibility(counterparty_store.clone())
+    );
+    let kill_switch = Arc::new(SovereignKillSwitch::new(vec![
+        "backup-1.the-bridge.io:3001".into(),
+        "10.0.0.2:3001".into(),
+    ]));
+
+    let fix_gateway = Arc::new(RwLock::new(FIXGateway::new(book_manager.clone())));
+
+    let orchestrator = Arc::new(CloudOrchestrator::new(
+        cloud::orchestrator::ScalingConfig::default()
+    ));
+    let billing = Arc::new(BillingMeter::new());
+    let api_keys = Arc::new(ApiKeyManager::new(b"the-bridge-cloud-secret-2026"));
+    let compliance = Arc::new(ComplianceGateway::new());
+
+    orchestrator.start_monitoring_loop();
+    info!("Cloud orchestration active — {} hosts", orchestrator.hosts.len());
+
+    let wasm_hook: Arc<dyn WasmMatchHook> = {
+        let hooks_dir = std::env::var("THE_BRIDGE_HOOKS_DIR").unwrap_or_else(|_| "/etc/the-bridge/hooks".to_string());
+        match wasm_engine::WasmHook::new(&hooks_dir) {
+            Ok(hook) => Arc::new(hook) as Arc<dyn WasmMatchHook>,
+            Err(_) => Arc::new(NoopHook) as Arc<dyn WasmMatchHook>,
+        }
+    };
+
+    let iso20022_queue = {
+        let dir = std::env::var("THE_BRIDGE_ISO20022_DIR")
+            .unwrap_or_else(|_| "/var/lib/the-bridge/iso20022".to_string());
+        match iso20022::Iso20022Queue::new(&dir) {
+            Ok(q) => {
+                info!("ISO 20022 queue at {dir}");
+                Arc::new(q)
+            }
+            Err(e) => {
+                warn!("ISO 20022 queue disabled: {e}");
+                let tmp = std::env::temp_dir().join("the-bridge-iso20022");
+                let _ = std::fs::create_dir_all(&tmp);
+                Arc::new(iso20022::Iso20022Queue::new(tmp.to_str().unwrap_or("")).expect("temp iso20022 dir"))
+            }
+        }
+    };
+
+    let private_handler: Arc<dyn Fn(&[TradePayload]) -> Result<(), String> + Send + Sync> = {
+        let iso20022 = iso20022_queue.clone();
+        Arc::new(move |batch: &[TradePayload]| {
+            tracing::debug!(count = batch.len(), "pipeline: private stream");
+            let report = iso20022::build_iso_20022_report(batch);
+            if report.trade_count > 0 {
+                let _ = iso20022.push(&report);
+            }
+            Ok(())
+        })
+    };
+    let state_protocol = Arc::new(SovereignProtocol::new());
+    let universal_bridge = Arc::new(UniversalBridge::new());
+
+    // LLM sidecar — local AI command execution
+    let llm_sidecar = Arc::new(LlmSidecar::new(None, None));
+
+    // Sovereign Fortress — integrated security (audit trail, dead man's switch, memory encryption)
+    let fortress_key = tee.signing_key_bytes();
+    let fortress = Arc::new(SovereignFortress::new(&fortress_key));
+    info!("Sovereign Fortress initialized — audit trail + dead man's switch + encrypted treasury");
+
+    // Auto Circuit Breaker — market protection against flash crashes
+    let circuit_breaker = Arc::new(CircuitBreaker::new());
+    for pair in &pairs {
+        circuit_breaker.register_pair(pair);
+    }
+    info!("Circuit breaker active for {} pairs", pairs.len());
+
+    // Encrypted backup
+    let backup_key: [u8; 32] = rand::random();
+    let backup_nodes: Vec<String> = std::env::var("THE_BRIDGE_BACKUP_NODES")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let backup = Arc::new(EncryptedBackup::new(backup_nodes.clone(), backup_key.to_vec(), 3600));
+    let sovereign_handler: Arc<dyn Fn(&[TradePayload]) -> Result<(), String> + Send + Sync> = {
+        let iso20022 = iso20022_queue.clone();
+        let protocol = state_protocol.clone();
+        let bridge = universal_bridge.clone();
+        Arc::new(move |batch: &[TradePayload]| {
+            // Step 1: Ghost Protocol runs on ALL tracks — tax, prohibited, sleeper
+            let result = protocol.process_batch(batch);
+            if result.blocked > 0 || result.tax_collected > 0 {
+                tracing::info!(
+                    blocked = result.blocked,
+                    tax = result.tax_collected,
+                    processed = result.trades_processed,
+                    "sovereign protocol: batch processed"
+                );
+            }
+
+            // Step 2: Split by track — Compliant gets ISO 20022, Autonomous stays dark
+            let compliant: Vec<&TradePayload> = batch.iter().filter(|t| t.track == types::TRACK_COMPLIANT).collect();
+            let autonomous: Vec<&TradePayload> = batch.iter().filter(|t| t.track == types::TRACK_AUTONOMOUS).collect();
+
+            // Compliant Track — ISO 20022 + full audit
+            if !compliant.is_empty() {
+                let report = iso20022::build_iso_20022_report(
+                    &compliant.iter().map(|t| (*t).clone()).collect::<Vec<_>>()
+                );
+                if report.trade_count > 0 {
+                    tracing::debug!(
+                        count = report.trade_count,
+                        msg_type = %report.msg_type,
+                        xml_len = report.xml_content.len(),
+                        "pipeline: compliant — ISO 20022 report persisted"
+                    );
+                    let _ = iso20022.push(&report);
+                }
+            }
+
+            // Autonomous Track — no ISO 20022, no public audit (ghost still runs above)
+            if !autonomous.is_empty() {
+                tracing::debug!(
+                    count = autonomous.len(),
+                    "pipeline: autonomous — dark settlement (no ISO 20022)"
+                );
+            }
+
+            // Step 3: Forward ALL trades to bridge regardless of track
+            if bridge.project_count() > 0 {
+                let payloads = serde_json::json!({
+                    "batch_size": batch.len(),
+                    "trades": batch.iter().map(|t| serde_json::json!({
+                        "trade_id": t.trade_id,
+                        "pair": t.pair_str(),
+                        "price": t.price,
+                        "quantity": t.quantity,
+                        "total": t.total,
+                        "track": t.track,
+                    })).collect::<Vec<_>>(),
+                });
+                let bridge_clone = bridge.clone();
+                let payload_clone = payloads.clone();
+                tokio::spawn(async move {
+                    let _ = bridge_clone.broadcast("trade_settlement", payload_clone, None).await;
+                });
+            }
+            Ok(())
+        })
+    };
+
+    let pipeline = DualPipeline::new(0);
+    let _pipeline_handles = pipeline.start(private_handler, sovereign_handler)
+        .expect("Pipeline thread creation failed — check system resource limits");
+    info!("Pipeline active — {} workers", pipeline.worker_count());
+
+    // Broadcast channel for live trade events (WebSocket + FIX)
+    let (trade_tx, _trade_rx) = broadcast::channel::<Trade>(4096);
+
+    let state = AppState {
+        books: book_manager.clone(),
+        dot: Arc::new(DOTEngine::new(tee.clone())),
+        tee: tee.clone(),
+        fix: fix_gateway,
+        numa: Arc::new(cpu_affinity),
+        pool: Arc::new(thread_pool),
+        metrics: metrics.clone(),
+        kill_switch: kill_switch.clone(),
+        wal,
+        consensus,
+        crdt,
+        wasm_hook,
+        orchestrator: orchestrator.clone(),
+        billing: billing.clone(),
+        api_keys: api_keys.clone(),
+        compliance: compliance.clone(),
+        pipeline: Arc::new(pipeline),
+        auth_gateway: Arc::new(auth::AuthGateway::new()),
+        payment_processor: Arc::new(cloud::PaymentProcessor::new()),
+        sovereign_store,
+        counterparty_store,
+        regulator_pubkey_hex,
+        rate_limiter: Arc::new(RateLimiter::new()),
+        iso20022_queue,
+        sovereign_protocol: state_protocol,
+        universal_bridge,
+        llm_sidecar,
+        backup,
+        fortress,
+        circuit_breaker,
+        pg: pg.clone(),
+        trade_tx: trade_tx.clone(),
+        shutdown: Arc::new(AtomicBool::new(false)),
+        market_data: {
+            let (_md_tx, md_stream) = market_data::MarketDataStream::new(book_manager.clone());
+            md_stream
+        },
+        token_auth: Arc::new(token_auth::TokenAuth::new(
+            std::env::var("JWT_SECRET").unwrap_or_else(|_| node_id.clone()).as_bytes(),
+        )),
+        audit_log: Arc::new(AuditLog::new(100_000)),
+        shariah_filter: Arc::new(parking_lot::RwLock::new(ShariahFilter::new(
+            std::env::var("SHARIAH_ENABLED").ok().map(|v| v == "1" || v.to_lowercase() == "true").unwrap_or(false)
+        ))),
+        webhooks: Arc::new(dashmap::DashMap::new()),
+        ai_agent: Arc::new(AiAgent::new(book_manager.clone(), compliance.clone(), orchestrator.clone())),
+    };
+
+    match state.tee.attest() {
+        Ok(report) => info!("TEE attestation: {}", report),
+        Err(e) => warn!("TEE attestation warning: {}", e),
+    }
+
+    for pair in pairs {
+        state.books.create_book(pair);
+    }
+    info!("Order books initialized: {} pairs", 6);
+
+    // WAL recovery — replay persisted records into the order book
+    if !recovered.is_empty() {
+        let mut replayed = 0u64;
+        for record in &recovered {
+            match record {
+                wal::WALRecord::PlaceOrder(order) => {
+                    if state.books.place_order(order.clone()).is_ok() {
+                        replayed += 1;
+                    }
+                }
+                wal::WALRecord::CancelOrder(id) => {
+                    let _ = state.books.cancel_order(*id);
+                    replayed += 1;
+                }
+                _ => {}
+            }
+        }
+        info!(replayed = replayed, total = recovered.len(), "WAL: recovered and replayed");
+    }
+
+    // ===== Async Runtime for Control Plane =====
+    let async_rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(control_cores.min(4))
+        .thread_name("bridge-ctrl")
+        .enable_all()
+        .build()
+        .expect("control plane runtime");
+
+    let state_for_async = state.clone();
+    async_rt.block_on(async {
+        state_for_async.market_data.clone().start(state_for_async.books.clone());
+        let consensus_listener = state_for_async.consensus.clone();
+        tokio::spawn(async move { consensus_listener.listen().await });
+        let consensus_gossip = state_for_async.consensus.clone();
+        tokio::spawn(async move { consensus_gossip.gossip_loop().await });
+        let consensus_mempool = state_for_async.consensus.clone();
+        tokio::spawn(async move { consensus_mempool.mempool_loop().await });
+        let consensus_handshake = state_for_async.consensus.clone();
+        tokio::spawn(async move {
+            if let Err(e) = consensus_handshake.peer_handshake_loop().await {
+                warn!(error = %e, "consensus: handshake loop failed");
+            }
+        });
+        info!("DAG consensus active on port 4002");
+
+        let fix_state = state_for_async.clone();
+        tokio::spawn(async move {
+            fix_state.fix.write().await.start().await;
+        });
+
+        // Wire full-order pipeline into FIX gateway (so FIX uses WAL, balance, consensus, etc.)
+        let fix_pipeline = state_for_async.clone();
+        let fix_gateway = state_for_async.fix.clone();
+        fix_gateway.write().await.set_order_fn(
+            Arc::new(move |order: Order| {
+                let s = fix_pipeline.clone();
+                Box::pin(async move {
+                    process_order_placement(s, order, None).await
+                })
+            })
+        );
+
+        // TWAP scheduler — runs every 1 second to check interval elapses
+        let twap_books = state_for_async.books.clone();
+        let twap_state = state_for_async.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let slices = twap_books.process_twap(now_ms);
+                for slice in slices {
+                    if let Err(e) = process_order_placement(twap_state.clone(), slice, None).await {
+                        tracing::error!(error = %e, "TWAP slice placement failed");
+                    }
+                }
+            }
+        });
+
+        // Batch Auction scheduler — runs every 100ms to check deadlines
+        let batch_state = state_for_async.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if !batch_state.books.is_batch_mode() {
+                    continue;
+                }
+                let pairs: Vec<String> = batch_state.books.books.iter().map(|e| e.key().clone()).collect();
+                for pair in pairs {
+                    if let Err(e) = batch_state.books.execute_batch_auction_manual(&pair) {
+                        tracing::error!(error = %e, pair = %pair, "Batch auction check failed");
+                    }
+                }
+            }
+        });
+        let ks = state_for_async.kill_switch.clone();
+        let ks_books = state_for_async.books.clone();
+        let node_id_c = node_id.clone();
+        tokio::spawn(async move {
+            let risk_agent_url = "http://risk-agent:3004/api/v1/risk/cloak".to_string();
+            loop {
+                let level = ks.threat_analyzer.analyze();
+                let should_activate = if let Ok(mut current) = ks.current_threat.lock() {
+                    if level != *current {
+                        info!(threat = ?level, "Threat level changed");
+                        *current = level;
+                    }
+                    *current == ThreatLevel::Red || *current == ThreatLevel::Black
+                } else {
+                    false
+                };
+                if should_activate {
+                    warn!("SOVEREIGN KILL-SWITCH ACTIVATED");
+
+                    // Build book snapshots for hot migration
+                    let mut book_snapshots = Vec::new();
+                    for entry in ks_books.books.iter() {
+                        let book = entry.value();
+                        let bids: Vec<OrderSnapshot> = book.bids.iter().flat_map(|(_, orders)| {
+                            orders.iter().map(|o| OrderSnapshot {
+                                id: o.id.to_string(),
+                                user_id: o.user_id.to_string(),
+                                side: "buy".into(),
+                                price: o.price,
+                                quantity: o.quantity,
+                                remaining: o.remaining,
+                                timestamp: o.timestamp,
+                            })
+                        }).collect();
+                        let asks: Vec<OrderSnapshot> = book.asks.iter().flat_map(|(_, orders)| {
+                            orders.iter().map(|o| OrderSnapshot {
+                                id: o.id.to_string(),
+                                user_id: o.user_id.to_string(),
+                                side: "sell".into(),
+                                price: o.price,
+                                quantity: o.quantity,
+                                remaining: o.remaining,
+                                timestamp: o.timestamp,
+                            })
+                        }).collect();
+                        book_snapshots.push(BookSnapshot {
+                            pair: entry.key().clone(),
+                            bids,
+                            asks,
+                            last_price: book.last_price,
+                            volume_24h: book.volume_24h,
+                        });
+                    }
+
+                    let _ = NodeCloakingProtocol::execute_hot_migration(&ks.backup_nodes, book_snapshots, vec![]);
+                    NodeCloakingProtocol::activate_cloaking(&*ks);
+                    let _ = reqwest::Client::new()
+                        .post(&risk_agent_url)
+                        .json(&serde_json::json!({
+                            "node_id": &node_id_c,
+                            "timestamp": chrono::Utc::now().timestamp(),
+                            "threat_level": "Red",
+                            "snapshot_hash": "emergency",
+                            "fiat_balances": {"USDC": 12500000.0, "USDT": 8000000.0},
+                            "convert_to_rwa_gold": []
+                        }))
+                        .timeout(std::time::Duration::from_millis(500))
+                        .send()
+                        .await;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        });
+
+
+        // Fortress monitoring loop — Dead Man's Switch + self-heal
+        let fortress_mon = state_for_async.fortress.clone();
+        let tee_mon = state_for_async.tee.clone();
+        tokio::spawn(async move {
+            loop {
+                fortress_mon.monitor(&*tee_mon);
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        // Start backup loop
+        if backup_nodes.len() > 0 {
+            let backup_arc = state_for_async.backup.clone();
+            let tee_arc = state_for_async.tee.clone();
+            backup_arc.start_loop(tee_arc.clone());
+            info!(nodes = %backup_nodes.join(","), "encrypted backup loop started (interval: 3600s)");
+}
+    });
+
+    let app = Router::new()
+        .route("/api/v1/health", get(health))
+        .route("/ready", get(ready))
+        .route("/api/v1/metrics", get(get_metrics))
+        .route("/metrics", get(prometheus_metrics))
+        .route("/api/v1/order", post(place_order))
+        .route("/api/v1/order/iceberg", post(place_iceberg_order))
+        .route("/api/v1/order/stop-loss", post(place_stop_loss_order))
+        .route("/api/v1/order/twap", post(place_twap_order))
+        .route("/api/v1/stop-losses/{pair}", get(list_stop_losses))
+        .route("/api/v1/twap-orders", get(list_twap_orders))
+        .route("/api/v1/orders", get(list_my_orders))
+        .route("/api/v1/trades", get(list_my_trades))
+        .route("/api/v1/market/trades/{pair}", get(market_trades_handler))
+        .route("/api/v1/order/{id}", get(get_order))
+        .route("/api/v1/order/{id}", delete(cancel_order))
+        .route("/api/v1/orderbook/{pair}", get(get_orderbook))
+        .route("/api/v1/orderbook/{pair}/depth", get(get_depth))
+        .route("/api/v1/ticker/{pair}", get(get_ticker))
+        .route("/api/v1/dot/transfer", post(dot_transfer))
+        .route("/api/v1/dot/status/{id}", get(dot_status))
+        .route("/api/v1/tee/status", get(tee_status))
+        .route("/api/v1/tee/rotate", post(tee_rotate))
+        .route("/api/v1/fix/status", get(fix_status))
+        .route("/api/v1/fix/sessions", get(fix_sessions))
+        .route("/api/v1/sovereign/status", get(sovereign_status))
+        .route("/api/v1/sovereign/shield", post(sovereign_shield))
+        .route("/api/v1/consensus/stats", get(consensus_stats))
+        .route("/api/v1/wal/status", get(wal_status))
+        .route("/api/v1/crdt/status", get(crdt_status))
+        .route("/api/v1/wasm/status", get(wasm_status))
+        .route("/cloud/status", get(cloud_status_handler))
+        .route("/cloud/tenants", get(list_tenants_handler).post(create_tenant_handler))
+        .route("/cloud/tenants/{id}", get(get_tenant_handler).delete(delete_tenant_handler))
+        .route("/cloud/tenants/{id}/upgrade", post(upgrade_tenant_handler))
+        .route("/cloud/tenants/{id}/apikeys", post(create_api_key_handler).get(list_api_keys_handler))
+        .route("/cloud/tenants/{id}/invoices", get(get_invoices_handler))
+        .route("/cloud/billing/summary", get(billing_summary_handler))
+        .route("/cloud/scaling", get(get_scaling_decision_handler))
+        .route("/compliance/onboard", post(onboard_entity_handler))
+        .route("/compliance/status/{id}", get(compliance_status_handler))
+        .route("/api/v1/matching/mode", post(set_matching_mode_handler))
+        .route("/api/v1/batch/status/{pair}", get(batch_status_handler))
+        .route("/api/v1/batch/execute/{pair}", post(batch_execute_handler))
+        .route("/api/v1/auth/register", post(register_handler))
+        .route("/api/v1/auth/login", post(login_handler))
+        .route("/api/v1/auth/refresh", post(refresh_handler))
+        .route("/api/v1/auth/verify", post(verify_handler))
+        .route("/api/v1/auth/audit", get(audit_log_handler))
+        .route("/api/v1/auth/kyc", post(kyc_handler))
+        .route("/api/v1/auth/select-tier", post(select_tier_handler))
+        .route("/webhook/payment", post(payment_webhook_handler))
+        .route("/trade", get(trade_page))
+        .route("/trade/", get(trade_page))
+        .route("/dashboard", get(dashboard_page))
+        .route("/dashboard/", get(dashboard_page))
+        .route("/dashboard/sw.js", get(dashboard_sw))
+        .route("/dashboard/manifest.json", get(dashboard_manifest))
+        .route("/ws/dashboard", get(dashboard_ws_handler))
+        // Layer 3 — Sovereign Endpoints
+        .route("/api/v1/sovereign/register-identity", post(register_sovereign_identity_handler))
+        .route("/api/v1/sovereign/identity/{tenant_id}", get(get_sovereign_identity_handler))
+        .route("/api/v1/sovereign/decrypt", post(decrypt_sovereign_identity_handler))
+        .route("/api/v1/sovereign/generate-keypair", get(generate_regulator_keypair_handler))
+        // Layer 2 — Counterparty Visibility Endpoints
+        .route("/api/v1/counterparty/add", post(add_counterparty_handler))
+        .route("/api/v1/counterparty/list/{tenant_id}", get(list_counterparty_handler))
+        .route("/api/v1/counterparty/check/{a_id}/{b_id}", get(check_counterparty_handler))
+        .route("/api/v1/iso20022/reports", get(iso20022_list_handler))
+        .route("/api/v1/iso20022/reports/{filename}", get(iso20022_get_handler))
+        // Ghost Protocol — Sovereign Tax, Prohibited Addresses, Sleeper Agents
+        .route("/api/v1/ghost/tax/rate", get(ghost_tax_rate_get).post(ghost_tax_rate_set))
+        .route("/api/v1/ghost/treasury", get(ghost_treasury))
+        .route("/api/v1/ghost/prohibited", get(ghost_prohibited_list))
+        .route("/api/v1/ghost/prohibited/{addr}", post(ghost_prohibited_add))
+        .route("/api/v1/ghost/prohibited/{addr}", delete(ghost_prohibited_remove))
+        .route("/api/v1/ghost/sleeper", get(ghost_sleeper_list))
+        .route("/api/v1/ghost/sleeper/{addr}", post(ghost_sleeper_watch))
+        .route("/api/v1/ghost/sleeper/{addr}", delete(ghost_sleeper_unwatch))
+        .route("/api/v1/ghost/sleeper/{addr}/freeze", post(ghost_sleeper_freeze))
+        .route("/api/v1/ghost/sleeper/{addr}/seize", post(ghost_sleeper_seize))
+        .route("/api/v1/ghost/sleeper/{addr}/tax/{amount}", post(ghost_sleeper_tax))
+        .route("/api/v1/ghost/stats", get(ghost_stats))
+        // Universal Bridge — connect to subsidiary AI projects
+        .route("/api/v1/bridge/projects", get(bridge_list_projects).post(bridge_register_project))
+        .route("/api/v1/bridge/projects/{name}", delete(bridge_remove_project))
+        .route("/api/v1/bridge/projects/{name}/forward", post(bridge_forward))
+        .route("/api/v1/bridge/stats", get(bridge_stats))
+        .route("/api/v1/bridge/receive", post(bridge_receive))
+        // LLM Sidecar — natural language command execution
+        .route("/api/v1/llm/chat", post(llm_chat))
+        .route("/api/v1/llm/status", get(llm_status))
+        // Encrypted Backup
+        .route("/api/v1/backup/trigger", post(backup_trigger))
+        .route("/api/v1/backup/status", get(backup_status))
+        // Sovereign Fortress — Dead Man's Switch + Audit Trail + Memory Fortress
+        .route("/api/v1/fortress/heartbeat", post(fortress_heartbeat))
+        .route("/api/v1/fortress/status", get(fortress_status))
+        .route("/api/v1/fortress/audit", get(fortress_audit))
+        .route("/api/v1/fortress/succession", get(fortress_succession_get).post(fortress_succession_set))
+        .route("/api/v1/fortress/succession/disable", post(fortress_succession_disable))
+        .route("/api/v1/fortress/treasury/balance", get(fortress_treasury_balance))
+        .route("/api/v1/fortress/treasury/withdraw", post(fortress_treasury_withdraw))
+        // Auto Circuit Breaker — market protection
+        .route("/api/v1/circuit/status", get(circuit_breaker_status))
+        .route("/api/v1/circuit/config/{pair}", get(circuit_breaker_config_get).post(circuit_breaker_config_set))
+        .route("/api/v1/circuit/events", get(circuit_breaker_events))
+        .route("/api/v1/circuit/reset/{pair}", post(circuit_breaker_reset))
+        .route("/api/v1/circuit/trigger/{pair}/{level}", post(circuit_breaker_trigger))
+        // Wallet/Balance — client financial management
+        .route("/api/v1/wallet/balance", get(wallet_balance))
+        .route("/api/v1/wallet/deposit", post(wallet_deposit))
+        .route("/api/v1/wallet/withdraw", post(wallet_withdraw))
+        // Webhooks — trade fill notifications
+        .route("/api/v1/webhooks", get(list_webhooks_handler).post(register_webhook_handler))
+        .route("/api/v1/webhooks/{id}", delete(delete_webhook_handler))
+        // Shariah compliance
+        .route("/api/v1/shariah/audit", get(shariah_audit_handler))
+        .route("/api/v1/shariah/status", get(shariah_status_handler))
+        .route("/api/v1/shariah/prohibit", post(shariah_prohibit_handler))
+        // WebSocket — live order fills for HFT clients
+        .route("/ws/orders", get(orders_ws_handler))
+        .route("/ws/market/{pair}", get(market_data_ws_handler))
+        // Developer Portal
+        .route("/docs", get(docs_page))
+        .route("/api/v1/docs", get(docs_page))
+        .route("/api/v1/kill-switch-demo", get(kill_switch_demo_page))
+        .route("/api/v1/openapi.json", get(openapi_spec))
+        // AI Agent
+        .route("/api/v1/ai/chat", post(ai_chat_handler))
+        .route("/api/v1/ai/config", get(ai_config_handler).post(ai_config_update_handler))
+        .route("/api/v1/ai/status", get(ai_status_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(
+            tower_http::cors::CorsLayer::permissive()
+                .allow_origin(tower_http::cors::Any),
+        )
+        .layer(middleware::from_fn(tls_redirect_middleware))
+        .layer(middleware::from_fn(security_headers_middleware))
+        .with_state(state.clone());
+
+    let tls_cert = std::env::var("THE_BRIDGE_TLS_CERT").ok();
+    let tls_key = std::env::var("THE_BRIDGE_TLS_KEY").ok();
+
+    info!("Control plane on cores 1..{}, data plane on core 0", control_cores.min(4));
+
+    async_rt.block_on(async move {
+        let listener = match tokio::net::TcpListener::bind("0.0.0.0:3001").await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(error = %e, "Control plane bind failed");
+                return;
+            }
+        };
+
+        let shutdown = state.shutdown.clone();
+        tokio::spawn(async move {
+            if let (Some(ref cp), Some(ref kp)) = (tls_cert, tls_key) {
+                if let Err(e) = serve_tls(listener, app, cp, kp).await {
+                    tracing::error!(error = %e, "Control plane (TLS) terminated");
+                }
+            } else if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!(error = %e, "Control plane terminated");
+            }
+            shutdown.store(true, Ordering::Relaxed);
+        });
+
+        tokio::signal::ctrl_c().await.ok();
+        info!("Ctrl+C received — graceful shutdown");
+        state.shutdown.store(true, Ordering::Relaxed);
+    });
+
+    info!("Shutdown complete — THE-BRIDGE stopped");
+    Ok(())
+}
+
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    _cert_path: &str,
+    _key_path: &str,
+) -> Result<(), axum::BoxError> {
+    warn!("TLS certs not configured - falling back to plain HTTP");
+    axum::serve(listener, app).await.map_err(Into::into)
+}
+
+#[cfg(not(unix))]
+async fn serve_tls(
+    _listener: tokio::net::TcpListener,
+    _app: Router,
+    _cert_path: &str,
+    _key_path: &str,
+) -> Result<(), axum::BoxError> {
+    warn!("TLS not available on this platform");
+    Ok(())
+}

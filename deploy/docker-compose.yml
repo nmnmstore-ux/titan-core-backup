@@ -1,0 +1,43 @@
+version: "3.9"
+services:
+  the-bridge:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"   # REST API
+      - "4001:4001"   # FIX Gateway (plain TCP)
+      - "4443:4443"   # FIX Gateway (TLS)
+      - "4002:4002"   # DAG Consensus
+    volumes:
+      - the-bridge-wal:/var/lib/the-bridge/wal
+      - the-bridge-snapshots:/var/lib/the-bridge/snapshots
+      - ./hooks:/etc/the-bridge/hooks:ro
+      - ./tls:/etc/the-bridge/tls:ro
+    environment:
+      - RUST_LOG=the_bridge=info
+      - THE_BRIDGE_NODE_ID=engine-1
+      - THE_BRIDGE_WAL_DIR=/var/lib/the-bridge/wal
+      - THE_BRIDGE_HOOKS_DIR=/etc/the-bridge/hooks
+      - THE_BRIDGE_PEERS=
+      - THE_BRIDGE_REPLICAS=
+      - WAL_ENCRYPTION_KEY=${WAL_ENCRYPTION_KEY}
+      - WAL_SIGNING_SEED=${WAL_SIGNING_SEED}
+      - FIX_TLS_CERT=/etc/the-bridge/tls/cert.pem
+      - FIX_TLS_KEY=/etc/the-bridge/tls/key.pem
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+        reservations:
+          memory: 8G
+
+volumes:
+  the-bridge-wal:
+  the-bridge-snapshots:

@@ -1,0 +1,11 @@
+target/
+.env
+.env.docker
+*.pem
+*.cert
+*.key
+wal/
+deploy/.env
+deploy/.env.*
+*.log
+.DS_Store

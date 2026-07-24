@@ -1,0 +1,16 @@
+[package]
+name = "the-bridge-super-arb"
+version = "1.0.0"
+edition = "2021"
+description = "THE-BRIDGE Super Arbitrage Engine - Flash Loan + Cross-Venue + MEV + JIT + Staking + Statistical"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+hex = { workspace = true }
+futures-util = { workspace = true }

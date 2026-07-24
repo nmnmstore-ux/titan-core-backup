@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE-BRIDGE · Trading</title>
+<style>
+:root { --bg: #0b0e17; --card: #131a2b; --border: #1e2a45; --text: #c9d1d9; --text2: #6b7a8f; --accent: #00d4aa; --red: #f85149; --green: #00d4aa; --blue: #58a6ff; --yellow: #d29922; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,sans-serif; font-size:14px; direction:rtl; }
+input,select,button,textarea { font-family:inherit; font-size:13px; background:#0d1528; border:1px solid var(--border); color:var(--text); border-radius:6px; padding:6px 10px; outline:none; }
+input:focus,select:focus { border-color:var(--accent); }
+button { cursor:pointer; background:var(--accent); color:#0b0e17; font-weight:600; border:none; padding:8px 16px; border-radius:6px; transition:all 0.15s; }
+button:hover { filter:brightness(1.15); }
+button.danger { background:var(--red); }
+button:disabled { opacity:0.4; cursor:not-allowed; }
+select { cursor:pointer; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th { color:var(--text2); font-size:10px; text-transform:uppercase; padding:6px 4px; border-bottom:1px solid var(--border); text-align:right; }
+td { padding:6px 4px; border-bottom:1px solid #0d1528; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+
+/* Login */
+#login-screen { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px; }
+.login-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:40px; max-width:420px; width:100%; }
+.login-box h1 { color:var(--accent); font-size:22px; margin-bottom:8px; text-align:center; }
+.login-box p { color:var(--text2); font-size:13px; text-align:center; margin-bottom:24px; }
+.login-box label { display:block; font-size:12px; color:var(--text2); margin-bottom:6px; }
+.login-box input { width:100%; padding:10px 14px; font-size:14px; margin-bottom:16px; }
+.login-box button { width:100%; padding:12px; font-size:15px; }
+.login-box .error { color:var(--red); font-size:12px; margin-top:8px; text-align:center; display:none; }
+
+/* Main layout */
+#app { display:none; }
+.header { background:var(--card); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; }
+.header h1 { color:var(--accent); font-size:16px; }
+.header .user-info { display:flex; align-items:center; gap:12px; font-size:12px; color:var(--text2); }
+.header .user-info .badge { background:var(--accent); color:#0b0e17; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+.header button.logout { padding:4px 12px; font-size:12px; background:transparent; border:1px solid var(--border); color:var(--text2); }
+
+.main { display:grid; grid-template-columns:240px 1fr 280px; gap:12px; padding:12px; max-width:1400px; margin:0 auto; }
+
+/* Left: Order form */
+.order-panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
+.order-panel h2 { font-size:13px; color:var(--text2); margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:6px; }
+.order-panel .field { margin-bottom:10px; }
+.order-panel .field label { display:block; font-size:11px; color:var(--text2); margin-bottom:4px; }
+.order-panel .field input,.order-panel .field select { width:100%; }
+.order-panel .side-tabs { display:flex; gap:4px; margin-bottom:12px; }
+.order-panel .side-tabs button { flex:1; padding:8px; font-size:13px; background:transparent; border:1px solid var(--border); color:var(--text); border-radius:6px; }
+.order-panel .side-tabs button.active.buy { background:#00d4aa22; color:var(--green); border-color:var(--green); }
+.order-panel .side-tabs button.active.sell { background:#f8514922; color:var(--red); border-color:var(--red); }
+.order-panel .total { font-size:12px; color:var(--text2); margin-top:6px; padding:6px; background:#0d1528; border-radius:4px; text-align:center; }
+
+/* Center: Order book + market */
+.middle-panel { display:flex; flex-direction:column; gap:12px; }
+.market-bar { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; display:flex; justify-content:space-between; align-items:center; }
+.market-bar .pair-select { display:flex; gap:8px; align-items:center; }
+.market-bar .pair-select select { padding:6px 12px; font-size:14px; font-weight:600; }
+.market-bar .price-info { text-align:left; }
+.market-bar .price-info .last { font-size:20px; font-weight:700; color:var(--text); }
+.market-bar .price-info .change { font-size:12px; }
+.market-bar .price-info .change.up { color:var(--green); }
+.market-bar .price-info .change.down { color:var(--red); }
+
+.book-panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
+.book-panel h3 { font-size:12px; color:var(--text2); margin-bottom:8px; }
+.book-panel .book-table { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.book-panel .book-side .row { display:flex; justify-content:space-between; padding:2px 4px; font-size:12px; cursor:pointer; border-radius:3px; }
+.book-panel .book-side .row:hover { background:rgba(255,255,255,0.03); }
+.book-panel .book-side .row .price { font-family:monospace; }
+.book-panel .book-side .row .size { font-family:monospace; color:var(--text2); }
+.book-panel .book-side.asks .row .price { color:var(--red); }
+.book-panel .book-side.bids .row .price { color:var(--green); }
+.book-panel .spread { text-align:center; font-size:11px; color:var(--text2); padding:4px 0; border-top:1px solid var(--border); border-bottom:1px solid var(--border); margin:4px 0; }
+
+/* Right: Balance + Orders */
+.right-panel { display:flex; flex-direction:column; gap:12px; }
+.balance-panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; }
+.balance-panel h3 { font-size:12px; color:var(--text2); margin-bottom:8px; }
+.balance-panel .row { display:flex; justify-content:space-between; padding:4px 0; font-size:13px; }
+.balance-panel .row .lbl { color:var(--text2); }
+.balance-panel .row .val { font-weight:600; }
+
+.orders-panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:12px; flex:1; }
+.orders-panel .tabs { display:flex; gap:4px; margin-bottom:8px; }
+.orders-panel .tab { padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; background:transparent; border:1px solid var(--border); color:var(--text2); }
+.orders-panel .tab.active { background:var(--accent); color:#0b0e17; border-color:var(--accent); font-weight:600; }
+.orders-panel .list { max-height:300px; overflow-y:auto; }
+
+/* Utility */
+.green { color:var(--green); } .red { color:var(--red); } .yellow { color:var(--yellow); }
+.text-center { text-align:center; }
+.mt-8 { margin-top:8px; }
+.gap-4 { gap:4px; }
+.flex { display:flex; }
+.flex-1 { flex:1; }
+
+@media(max-width:900px) { .main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<!-- ===== LOGIN SCREEN ===== -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>⬡ THE-BRIDGE</h1>
+    <p>منصة التداول السيادية — دخول بمفتاح API</p>
+    <label>مفتاح API</label>
+    <input type="text" id="api-key-input" placeholder="tb_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" dir="ltr" style="text-align:left">
+    <button id="login-btn">دخول</button>
+    <div class="error" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ===== MAIN APP ===== -->
+<div id="app">
+  <div class="header">
+    <h1>⬡ THE-BRIDGE · تداول</h1>
+    <div class="user-info">
+      <span id="user-tenant-name"></span>
+      <span class="badge" id="user-tier"></span>
+      <button class="logout" id="logout-btn">خروج</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- LEFT: Order Form -->
+    <div class="order-panel">
+      <h2>أمر جديد</h2>
+      <div class="side-tabs">
+        <button class="buy active" data-side="Buy" onclick="setSide('Buy')">شراء</button>
+        <button class="sell" data-side="Sell" onclick="setSide('Sell')">بيع</button>
+      </div>
+      <div class="field">
+        <label>الزوج</label>
+        <select id="order-pair">
+          <option value="BTC/USD">BTC/USD</option>
+          <option value="ETH/USD">ETH/USD</option>
+          <option value="SOL/USD">SOL/USD</option>
+          <option value="ADA/USD">ADA/USD</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>النوع</label>
+        <select id="order-type">
+          <option value="Limit">Limit</option>
+          <option value="Market">Market</option>
+        </select>
+      </div>
+      <div class="field" id="price-field">
+        <label>السعر (USD)</label>
+        <input type="number" id="order-price" step="0.01" min="0" placeholder="50000">
+      </div>
+      <div class="field">
+        <label>الكمية</label>
+        <input type="number" id="order-qty" step="0.0001" min="0" placeholder="1.0">
+      </div>
+      <div class="total" id="order-total">المجموع: —</div>
+      <button id="place-order-btn" style="width:100%;margin-top:8px">تنفيذ الأمر</button>
+      <div id="order-status" style="font-size:12px;margin-top:6px;text-align:center"></div>
+    </div>
+
+    <!-- CENTER: Market Data -->
+    <div class="middle-panel">
+      <div class="market-bar">
+        <div class="pair-select">
+          <select id="market-pair" onchange="switchPair()">
+            <option value="BTC/USD">BTC/USD</option>
+            <option value="ETH/USD">ETH/USD</option>
+            <option value="SOL/USD">SOL/USD</option>
+            <option value="ADA/USD">ADA/USD</option>
+          </select>
+        </div>
+        <div class="price-info">
+          <div class="last" id="last-price">—</div>
+          <div class="change" id="price-change">0.00%</div>
+        </div>
+      </div>
+
+      <div class="book-panel">
+        <h3>دفتر الأوامر</h3>
+        <div class="book-table">
+          <div class="book-side asks" id="asks-container">
+            <div class="row" style="font-size:10px;color:var(--text2);padding:2px 4px">
+              <span>السعر</span><span>الكمية</span><span>المجموع</span>
+            </div>
+            <div id="asks-rows"></div>
+          </div>
+          <div class="book-side bids" id="bids-container">
+            <div class="row" style="font-size:10px;color:var(--text2);padding:2px 4px">
+              <span>السعر</span><span>الكمية</span><span>المجموع</span>
+            </div>
+            <div id="bids-rows"></div>
+          </div>
+        </div>
+        <div class="spread" id="spread-info">الفرق: —</div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Balance + Orders -->
+    <div class="right-panel">
+      <div class="balance-panel">
+        <h3>المحفظة</h3>
+        <div id="balance-content">
+          <div class="row"><span class="lbl">الرصيد</span><span class="val" id="bal-available">—</span></div>
+          <div class="row"><span class="lbl">معلق</span><span class="val" id="bal-locked">—</span></div>
+          <div class="row"><span class="lbl">الإجمالي</span><span class="val" id="bal-total">—</span></div>
+        </div>
+      </div>
+
+      <div class="orders-panel">
+        <div class="tabs">
+          <div class="tab active" onclick="switchOrdersTab('open',this)">أوامر مفتوحة</div>
+          <div class="tab" onclick="switchOrdersTab('history',this)">السجل</div>
+        </div>
+        <div class="list" id="orders-list">
+          <div class="text-center" style="color:var(--text2);padding:12px">لا توجد أوامر</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// === State ===
+let state = {
+  token: null,
+  tenantId: null,
+  tenantName: null,
+  tier: null,
+  currentPair: 'BTC/USD',
+  currentSide: 'Buy',
+  orders: [],
+  trades: [],
+  book: { asks: [], bids: [] },
+  balance: { balance: 0, locked: 0, available: 0 },
+  ws: null,
+  refreshInterval: null,
+};
+
+// === DOM refs ===
+const $ = (id) => document.getElementById(id);
+const loginScreen = $('login-screen');
+const app = $('app');
+const apiKeyInput = $('api-key-input');
+const loginBtn = $('login-btn');
+const loginError = $('login-error');
+const logoutBtn = $('logout-btn');
+
+// === Auth ===
+loginBtn.onclick = async () => {
+  const key = apiKeyInput.value.trim();
+  if (!key) { showLoginError('ادخل مفتاح API'); return; }
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'جاري الدخول...';
+  loginError.style.display = 'none';
+  try {
+    const res = await fetch('/api/v1/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: key })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error || 'فشل الدخول'); }
+    const data = await res.json();
+    state.token = data.access_token;
+    state.tenantId = data.tenant_id;
+    // Fetch tenant info from wallet balance
+    const bal = await apiFetch('/api/v1/wallet/balance');
+    state.tenantName = bal.tenant_name || '—';
+    state.tier = bal.tier || '—';
+    $('user-tenant-name').textContent = state.tenantName;
+    $('user-tier').textContent = state.tier;
+    loginScreen.style.display = 'none';
+    app.style.display = 'block';
+    init();
+  } catch (e) {
+    showLoginError(e.message);
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = 'دخول';
+  }
+};
+
+function showLoginError(msg) { loginError.textContent = msg; loginError.style.display = 'block'; }
+
+logoutBtn.onclick = () => {
+  state.token = null;
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  if (state.refreshInterval) { clearInterval(state.refreshInterval); state.refreshInterval = null; }
+  app.style.display = 'none';
+  loginScreen.style.display = 'flex';
+  apiKeyInput.value = '';
+};
+
+// === API helper ===
+async function apiFetch(path, opts = {}) {
+  const headers = { 'Authorization': 'Bearer ' + state.token, ...opts.headers };
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    // Token expired — try refresh (simplified: just log out)
+    alert('انتهت الجلسة — سجل دخول مرة أخرى');
+    logoutBtn.click();
+    throw new Error('unauthorized');
+  }
+  return res.json();
+}
+
+// === Init ===
+function init() {
+  switchPair();
+  refreshAll();
+  state.refreshInterval = setInterval(refreshAll, 3000);
+}
+
+function switchPair() {
+  state.currentPair = $('market-pair').value;
+  $('order-pair').value = state.currentPair;
+  refreshAll();
+}
+
+function setSide(side) {
+  state.currentSide = side;
+  document.querySelectorAll('.side-tabs button').forEach(b => {
+    b.classList.toggle('active', b.dataset.side === side);
+  });
+}
+
+// === Refresh ===
+async function refreshAll() {
+  try {
+    await Promise.all([
+      refreshBalance(),
+      refreshOrderBook(),
+      refreshOrders(),
+      refreshTrades(),
+    ]);
+  } catch (e) { /* silent */ }
+}
+
+async function refreshBalance() {
+  try {
+    const d = await apiFetch('/api/v1/wallet/balance');
+    state.balance = d;
+    $('bal-available').textContent = fmtNum(d.available);
+    $('bal-locked').textContent = fmtNum(d.locked);
+    $('bal-total').textContent = fmtNum(d.balance);
+  } catch (e) { /* ignore */ }
+}
+
+async function refreshOrderBook() {
+  try {
+    const d = await apiFetch('/api/v1/orderbook/' + encodeURIComponent(state.currentPair) + '/depth');
+    if (d.error) return;
+    state.book = d;
+    renderOrderBook();
+  } catch (e) { /* ignore */ }
+}
+
+async function refreshOrders() {
+  try {
+    const d = await apiFetch('/api/v1/orders');
+    state.orders = d.orders || d || [];
+    renderOrders();
+  } catch (e) { /* ignore */ }
+}
+
+async function refreshTrades() {
+  try {
+    const d = await apiFetch('/api/v1/trades');
+    state.trades = d.trades || d || [];
+    renderTrades();
+  } catch (e) { /* ignore */ }
+}
+
+// === Place Order ===
+$('order-qty').oninput = updateTotal;
+$('order-price').oninput = updateTotal;
+$('order-type').onchange = () => {
+  $('price-field').style.display = $('order-type').value === 'Market' ? 'none' : 'block';
+  updateTotal();
+};
+
+function updateTotal() {
+  const price = parseFloat($('order-price').value) || 0;
+  const qty = parseFloat($('order-qty').value) || 0;
+  const type = $('order-type').value;
+  if (type === 'Market') { $('order-total').textContent = 'سعر السوق'; return; }
+  $('order-total').textContent = 'المجموع: $' + fmtNum(price * qty);
+}
+
+$('place-order-btn').onclick = async () => {
+  const btn = $('place-order-btn');
+  const status = $('order-status');
+  btn.disabled = true;
+  status.textContent = 'جاري التنفيذ...';
+  try {
+    const order = {
+      id: crypto.randomUUID(),
+      user_id: state.tenantId,
+      pair: state.currentPair,
+      order_type: $('order-type').value,
+      side: state.currentSide,
+      price: $('order-type').value === 'Market' ? 0 : (parseFloat($('order-price').value) || 0),
+      quantity: parseFloat($('order-qty').value) || 0,
+      filled: 0,
+      remaining: parseFloat($('order-qty').value) || 0,
+      status: 'New',
+      timestamp: Date.now(),
+      ttl_ms: null,
+      is_swap: false,
+      swap_target_currency: null,
+      tee_signed: false,
+      dot_verified: false,
+      stealth: false,
+      trailing_offset: null,
+      trigger_price: null,
+      hard_floor: null,
+      track: 'Compliant',
+      style: 'Standard',
+      hidden_remaining: 0,
+    };
+    const res = await fetch('/api/v1/order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + state.token },
+      body: JSON.stringify(order),
+    });
+    const d = await res.json();
+    if (d.error) { status.textContent = '❌ ' + d.error; status.style.color = 'var(--red)'; }
+    else {
+      const filled = d.trades ? d.trades.length : 0;
+      status.textContent = '✅ تم التنفيذ — ' + filled + ' صفقة';
+      status.style.color = 'var(--green)';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+      refreshAll();
+    }
+  } catch (e) {
+    status.textContent = '❌ خطأ: ' + e.message;
+    status.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+};
+
+// === Render Order Book ===
+function renderOrderBook() {
+  const asks = (state.book.asks || []).slice(0, 10);
+  const bids = (state.book.bids || []).slice(0, 10);
+  const maxAskTotal = Math.max(...asks.map(a => (a.quantity || 0)), 1);
+  const maxBidTotal = Math.max(...bids.map(b => (b.quantity || 0)), 1);
+
+  $('asks-rows').innerHTML = asks.map(a => {
+    const pct = ((a.quantity || 0) / maxAskTotal * 100).toFixed(0);
+    return `<div class="row" onclick="fillOrder('Sell',${a.price})">
+      <span class="price">${fmtPrice(a.price)}</span>
+      <span class="size">${fmtNum(a.quantity)}</span>
+      <span class="size" style="color:var(--text2)">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  $('bids-rows').innerHTML = bids.map(b => {
+    const pct = ((b.quantity || 0) / maxBidTotal * 100).toFixed(0);
+    return `<div class="row" onclick="fillOrder('Buy',${b.price})">
+      <span class="price">${fmtPrice(b.price)}</span>
+      <span class="size">${fmtNum(b.quantity)}</span>
+      <span class="size" style="color:var(--text2)">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  // Spread
+  if (asks.length && bids.length) {
+    const spread = asks[asks.length-1].price - bids[0].price;
+    const spreadPct = (spread / bids[0].price * 100).toFixed(3);
+    $('spread-info').textContent = 'الفرق: ' + fmtPrice(spread) + ' (' + spreadPct + '%)';
+    // Last price
+    $('last-price').textContent = fmtPrice(bids[0].price);
+    $('last-price').style.color = 'var(--green)';
+  }
+}
+
+function fillOrder(side, price) {
+  setSide(side);
+  $('order-price').value = price;
+  updateTotal();
+  $('order-type').value = 'Limit';
+  $('price-field').style.display = 'block';
+}
+
+// === Render Orders ===
+let ordersTab = 'open';
+
+function switchOrdersTab(tab, el) {
+  ordersTab = tab;
+  document.querySelectorAll('.orders-panel .tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
+  renderOrders();
+}
+
+function renderOrders() {
+  const container = $('orders-list');
+  if (ordersTab === 'open') {
+    // Check if state.orders is an object or array
+    let list = state.orders;
+    if (!Array.isArray(list)) {
+      if (list && list.orders) list = list.orders;
+      else { container.innerHTML = '<div class="text-center" style="color:var(--text2);padding:12px">لا توجد أوامر</div>'; return; }
+    }
+    const open = list.filter(o => o.status === 'New' || o.status === 'PartiallyFilled');
+    if (!open.length) {
+      container.innerHTML = '<div class="text-center" style="color:var(--text2);padding:12px">لا توجد أوامر مفتوحة</div>';
+      return;
+    }
+    container.innerHTML = '<table><tr><th>الزوج</th><th>النوع</th><th>الكمية</th><th>السعر</th><th>التنفيذ</th><th>حذف</th></tr>' +
+      open.map(o => `<tr>
+        <td>${o.pair}</td>
+        <td class="${o.side === 'Buy' ? 'green' : 'red'}">${o.side === 'Buy' ? 'شراء' : 'بيع'}</td>
+        <td>${fmtNum(o.remaining)}</td>
+        <td>${fmtPrice(o.price)}</td>
+        <td>${(o.filled / o.quantity * 100).toFixed(1)}%</td>
+        <td><button class="danger" style="padding:2px 8px;font-size:11px" onclick="cancelOrder('${o.id}')">X</button></td>
+      </tr>`).join('') + '</table>';
+  } else {
+    renderTrades();
+  }
+}
+
+async function cancelOrder(id) {
+  try {
+    const d = await apiFetch('/api/v1/order/' + id, { method: 'DELETE' });
+    refreshAll();
+  } catch (e) { /* ignore */ }
+}
+
+function renderTrades() {
+  const container = $('orders-list');
+  if (ordersTab !== 'history') return;
+  let list = state.trades;
+  if (!Array.isArray(list)) {
+    if (list && list.trades) list = list.trades;
+    else { container.innerHTML = '<div class="text-center" style="color:var(--text2);padding:12px">لا توجد صفقات</div>'; return; }
+  }
+  if (!list.length) {
+    container.innerHTML = '<div class="text-center" style="color:var(--text2);padding:12px">لا توجد صفقات</div>';
+    return;
+  }
+  container.innerHTML = '<table><tr><th>الوقت</th><th>الزوج</th><th>النوع</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th></tr>' +
+    list.slice(0, 30).map(t => `<tr>
+      <td>${new Date(t.timestamp || t.time || 0).toLocaleTimeString()}</td>
+      <td>${t.pair || '—'}</td>
+      <td class="${(t.side || t.taker_side) === 'Buy' ? 'green' : 'red'}">${(t.side || t.taker_side) === 'Buy' ? 'شراء' : 'بيع'}</td>
+      <td>${fmtNum(t.quantity || t.qty || 0)}</td>
+      <td>${fmtPrice(t.price || 0)}</td>
+      <td>$${fmtNum((t.quantity || 0) * (t.price || 0))}</td>
+    </tr>`).join('') + '</table>';
+}
+
+// === Formatters ===
+function fmtNum(n) {
+  if (n == null || isNaN(n)) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtPrice(n) {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1000) return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n >= 1) return n.toFixed(2);
+  return n.toFixed(6);
+}
+
+// === Keyboard shortcut ===
+apiKeyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loginBtn.click(); });
+
+console.log('⬡ THE-BRIDGE Trading Interface loaded');
+</script>
+</body>
+</html>

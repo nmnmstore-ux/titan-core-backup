@@ -1,0 +1,25 @@
+{$DOMAIN:localhost} {
+    tls {$EMAIL:off} {
+        issuer acme
+    }
+
+    reverse_proxy the-bridge:3001 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+
+    @ratsnest {
+        path /api/v1/health /metrics
+    }
+    log {
+        output file /data/access.log
+        format json
+    }
+}

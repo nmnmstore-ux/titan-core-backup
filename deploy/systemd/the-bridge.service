@@ -1,0 +1,47 @@
+[Unit]
+Description=THE-BRIDGE Matching Engine v1.0.0
+Documentation=https://github.com/anomalyco/swift-bridge
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=thebridge
+Group=thebridge
+WorkingDirectory=/opt/the-bridge
+ExecStart=/opt/the-bridge/the-bridge-matching-engine
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+LimitNPROC=65536
+LimitMEMLOCK=infinity
+TasksMax=infinity
+
+# CPU & NUMA tuning (Linux bare metal only)
+CPUAccounting=yes
+CPUWeight=1000
+IOWeight=1000
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Environment
+Environment=RUST_LOG=the_bridge=info
+Environment=THE_BRIDGE_NODE_ID=%H
+Environment=THE_BRIDGE_WAL_DIR=/var/lib/the-bridge/wal
+Environment=THE_BRIDGE_HOOKS_DIR=/etc/the-bridge/hooks
+Environment=WAL_ENCRYPTION_KEY=
+Environment=WAL_SIGNING_SEED=
+Environment=DATABASE_URL=
+Environment=FIX_TLS_CERT=/etc/the-bridge/tls/cert.pem
+Environment=FIX_TLS_KEY=/etc/the-bridge/tls/key.pem
+EnvironmentFile=-/etc/the-bridge/env/prod.conf
+
+[Install]
+WantedBy=multi-user.target

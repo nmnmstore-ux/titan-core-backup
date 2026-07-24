@@ -1,0 +1,44 @@
+services:
+  the-bridge:
+    deploy:
+      resources:
+        reservations:
+          cpus: "4"
+          memory: "8G"
+        limits:
+          cpus: "8"
+          memory: "16G"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/api/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  caddy:
+    deploy:
+      resources:
+        limits:
+          memory: "256M"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  prometheus:
+    deploy:
+      resources:
+        limits:
+          memory: "1G"
+
+  grafana:
+    deploy:
+      resources:
+        limits:
+          memory: "512M"

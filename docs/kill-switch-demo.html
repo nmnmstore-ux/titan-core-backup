@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE-BRIDGE · Kill Switch Demo</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:'Courier New',monospace;display:flex;justify-content:center;padding:2rem}
+.container{max-width:1200px;width:100%}
+h1{font-size:1.5rem;color:#00ff88;margin-bottom:.5rem;text-transform:uppercase;letter-spacing:3px}
+.sub{color:#666;font-size:.8rem;margin-bottom:2rem}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:2rem}
+.card{background:#111;border:1px solid #222;border-radius:8px;padding:1rem}
+.card h3{font-size:.7rem;color:#666;text-transform:uppercase;letter-spacing:2px;margin-bottom:.5rem}
+.card .value{font-size:1.8rem;font-weight:bold;color:#00ff88}
+.card .label{font-size:.75rem;color:#888}
+.threat-gauge{text-align:center;padding:2rem}
+.threat-level{font-size:3rem;font-weight:bold;margin:1rem 0;transition:all .3s}
+.threat-level.green{color:#00ff88}
+.threat-level.yellow{color:#ffcc00}
+.threat-level.orange{color:#ff6600}
+.threat-level.red{color:#ff2200}
+.threat-level.black{color:#000;text-shadow:0 0 20px #ff0000}
+.kill-btn{display:block;width:100%;padding:1.5rem;font-size:1.2rem;font-weight:bold;border:2px solid #ff2200;border-radius:8px;cursor:pointer;transition:all .3s;text-transform:uppercase;letter-spacing:4px;margin-bottom:2rem}
+.kill-btn.armed{background:#1a0000;color:#ff4444}
+.kill-btn.armed:hover{background:#ff2200;color:#fff;box-shadow:0 0 40px #ff220066}
+.kill-btn.active{background:#ff2200;color:#fff;animation:pulse .5s infinite}
+.kill-btn:disabled{opacity:.5;cursor:not-allowed}
+@keyframes pulse{0%{opacity:1}50%{opacity:.7}100%{opacity:1}}
+.books{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:1rem}
+.book{background:#0d0d14;border:1px solid #1a1a2e;border-radius:4px;padding:.5rem;font-size:.7rem}
+.book .pair{color:#666;font-size:.6rem;text-transform:uppercase}
+.book .price{color:#00ff88;font-size:1rem}
+.book .vol{color:#888;font-size:.65rem}
+.log{background:#0a0a0f;border:1px solid #1a1a2e;border-radius:8px;padding:1rem;height:200px;overflow-y:auto;font-size:.75rem;color:#888;margin-bottom:1rem}
+.log .entry{color:#888;padding:2px 0}
+.log .entry.warn{color:#ffcc00}
+.log .entry.danger{color:#ff2200}
+.log .entry.info{color:#00ff88}
+.phase-indicator{display:flex;gap:1rem;justify-content:center;margin:1rem 0}
+.phase{display:flex;align-items:center;gap:.5rem;font-size:.75rem;color:#444;transition:all .5s}
+.phase.active{color:#00ff88}
+.phase.done{color:#00ff88}
+.phase-num{width:24px;height:24px;border-radius:50%;border:2px solid #444;display:flex;align-items:center;justify-content:center;font-size:.7rem;font-weight:bold}
+.phase.active .phase-num{border-color:#00ff88;background:#00ff8822}
+.phase.done .phase-num{border-color:#00ff88;background:#00ff88}
+.phase.done .phase-num::after{content:'✓';color:#000}
+.hidden{display:none}
+.modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.9);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal-content{background:#111;border:2px solid #ff2200;border-radius:16px;padding:2rem;max-width:600px;width:90%;text-align:center}
+.modal h2{color:#ff2200;font-size:1.5rem;margin-bottom:1rem}
+.modal p{color:#888;line-height:1.6;margin-bottom:1.5rem}
+.modal .btn{background:#ff2200;color:#fff;border:none;padding:.8rem 2rem;border-radius:4px;cursor:pointer;font-size:1rem;font-weight:bold}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⛉ THE-BRIDGE · Kill Switch</h1>
+  <div class="sub">Sovereign Node Cloaking Protocol · Interactive Demo</div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>Current Threat</h3>
+      <div class="threat-level green" id="threatDisplay">GREEN</div>
+    </div>
+    <div class="card">
+      <h3>Engine Status</h3>
+      <div class="value" id="engineStatus" style="font-size:1rem">🟢 ACTIVE</div>
+      <div class="label" style="margin-top:.5rem">Data Plane: Core 0 | Control Plane: Cores 1-3</div>
+    </div>
+  </div>
+
+  <div class="phase-indicator">
+    <div class="phase active" id="phase1"><span class="phase-num">1</span> Monitor</div>
+    <div class="phase" id="phase2"><span class="phase-num">2</span> Analyze</div>
+    <div class="phase" id="phase3"><span class="phase-num">3</span> Snapshot</div>
+    <div class="phase" id="phase4"><span class="phase-num">4</span> Migrate</div>
+    <div class="phase" id="phase5"><span class="phase-num">5</span> Cloak</div>
+  </div>
+
+  <div class="books" id="books"></div>
+
+  <button class="kill-btn armed" id="killBtn" onclick="activateKillSwitch()">⛉ ACTIVATE KILL SWITCH</button>
+
+  <div class="log" id="log"></div>
+</div>
+
+<div class="modal hidden" id="resultModal">
+  <div class="modal-content">
+    <h2 id="modalTitle">⛉ KILL SWITCH ACTIVATED</h2>
+    <p id="modalBody">All trading suspended. Matching engine cloaked. Orders migrated to backup nodes.</p>
+    <button class="btn" onclick="resetDemo()">Reset Demo</button>
+  </div>
+</div>
+
+<script>
+const pairs = ['USD/EUR','USD/EGP','USD/SAR','USD/AED','USD/GBP','EUR/EGP'];
+const prices = [0.92, 30.85, 3.75, 3.67, 0.79, 33.54];
+const volumes = [145000, 89000, 234000, 178000, 312000, 67000];
+const bids = [125, 340, 89, 156, 278, 95];
+const asks = [98, 287, 76, 134, 245, 82];
+const logEl = document.getElementById('log');
+const threatDisplay = document.getElementById('threatDisplay');
+const killBtn = document.getElementById('killBtn');
+let phaseEls = [1,2,3,4,5].map(i => document.getElementById('phase'+i));
+
+function log(msg, type='') {
+  const entry = document.createElement('div');
+  entry.className = 'entry ' + type;
+  entry.textContent = '[' + new Date().toISOString().substr(11,8) + '] ' + msg;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function renderBooks() {
+  const container = document.getElementById('books');
+  container.innerHTML = '';
+  pairs.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'book';
+    const change = (Math.random() - 0.5) * 0.02;
+    const chgStr = (change >= 0 ? '+' : '') + (change * 100).toFixed(2) + '%';
+    const chgColor = change >= 0 ? '#00ff88' : '#ff4444';
+    div.innerHTML = `
+      <div class="pair">${p}</div>
+      <div class="price">${prices[i].toFixed(4)}</div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span class="vol" style="color:#00ff88">Bids: ${bids[i]}</span>
+        <span class="vol" style="color:#ff4444">Asks: ${asks[i]}</span>
+      </div>
+      <div style="margin-top:4px;font-size:.65rem;color:${chgColor}">${chgStr}</div>
+    `;
+    container.appendChild(div);
+  });
+}
+
+function updateThreat(level) {
+  const levels = ['GREEN','YELLOW','ORANGE','RED','BLACK'];
+  const colors = ['green','yellow','orange','red','black'];
+  const idx = levels.indexOf(level);
+  threatDisplay.textContent = level;
+  threatDisplay.className = 'threat-level ' + colors[idx];
+  if (idx >= 3) {
+    document.querySelector('.grid .card:first-child').style.borderColor = '#ff2200';
+  }
+}
+
+function setPhase(idx) {
+  phaseEls.forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+    el.classList.toggle('done', i < idx);
+  });
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function escalateThreat(from, to) {
+  const levels = ['GREEN','YELLOW','ORANGE','RED','BLACK'];
+  const start = levels.indexOf(from);
+  const end = levels.indexOf(to);
+  for (let i = start; i <= end; i++) {
+    updateThreat(levels[i]);
+    if (i === 0) log('System nominal — threat level GREEN', 'info');
+    if (i === 1) log('⚠ Anomaly detected: request rate spike 340% above baseline', 'warn');
+    if (i === 2) log('⚠ Threat escalated: DDoS pattern detected on ports 3001/4001', 'warn');
+    if (i === 3) log('⛔ CRITICAL: Unauthorized access attempt via TEE interface', 'danger');
+    if (i === 4) log('⛔ BLACK: Active breach detected — initiating Kill Switch', 'danger');
+    await sleep(800);
+  }
+}
+
+async function activateKillSwitch() {
+  if (killBtn.disabled) return;
+  killBtn.disabled = true;
+  killBtn.className = 'kill-btn active';
+  killBtn.textContent = '⛉ KILL SWITCH SEQUENCE ACTIVE';
+  document.getElementById('engineStatus').textContent = '🔴 BREACH DETECTED';
+  document.getElementById('engineStatus').style.color = '#ff2200';
+
+  log('=== SOVEREIGN KILL SWITCH ACTIVATION SEQUENCE ===', 'danger');
+
+  setPhase(0);
+  await escalateThreat('GREEN', 'BLACK');
+  setPhase(1);
+
+  log('>>> Phase 2: Threat Analysis', 'warn');
+  await sleep(500);
+  log('Analyzing attack vector...');
+  await sleep(300);
+  log('Vector: TEE interface intrusion via side-channel attack');
+  await sleep(300);
+  log('Attacker IP: 185.xxx.xx.xx (masked) — 47 failed attestation attempts');
+  await sleep(300);
+  log('Threat severity: CRITICAL — immediate containment required');
+  setPhase(2);
+
+  log('>>> Phase 3: Building Book Snapshots', 'warn');
+  await sleep(400);
+  let totalOrders = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    await sleep(200);
+    const orderCount = bids[i] + asks[i];
+    totalOrders += orderCount;
+    log(`Snapshot [${pairs[i]}]: ${bids[i]} bids, ${asks[i]} asks = ${orderCount} orders`);
+  }
+  log(`Total orders snapshotted: ${totalOrders} across ${pairs.length} pairs`);
+  log(`Snapshot hash: ${Array.from({length:64},()=>'0123456789abcdef'[Math.floor(Math.random()*16)]).join('')}`, 'info');
+  setPhase(3);
+
+  log('>>> Phase 4: Hot Migration', 'warn');
+  await sleep(300);
+  log('Encrypting book snapshots with Ed25519 ephemeral key...');
+  await sleep(400);
+  log('Establishing secure tunnel to backup-1.the-bridge.io:3001...');
+  await sleep(300);
+  log('Tunnel established (AES-256-GCM + ephemeral ECDH)');
+  await sleep(300);
+  log('Transmitting encrypted payload...');
+  await sleep(500);
+  log('✓ Backup node acknowledged — snapshot hash verified', 'info');
+  await sleep(200);
+  log('✓ Replica 2 confirmed — hot stand-by active', 'info');
+  await sleep(200);
+  log('✓ Replica 3 confirmed — hot stand-by active', 'info');
+  setPhase(4);
+
+  log('>>> Phase 5: Activating Cloaking Protocol', 'warn');
+  await sleep(300);
+  log('Clearing in-memory order books...');
+  await sleep(200);
+  log('Wiping ephemeral session keys...');
+  await sleep(200);
+  log('Zeroizing TEE signing key...');
+  await sleep(200);
+  log('Broadcasting RED alert to risk agent...');
+  await sleep(300);
+  log('Locking API endpoints (all POST/PUT/DELETE blocked)...');
+  await sleep(200);
+  log('✓ CLOAKING COMPLETE', 'info');
+  log('✓ Hot migration: 100% orders preserved', 'info');
+  log('✓ No data loss — engine state replicated to 3 backup nodes', 'info');
+  log('✓ Kill Switch: TRADING SUSPENDED — ENGINE CLOAKED', 'danger');
+  setPhase(5);
+
+  killBtn.textContent = '⛉ ENGINE CLOAKED';
+  killBtn.className = 'kill-btn';
+  killBtn.style.borderColor = '#ff2200';
+  killBtn.style.color = '#ff4444';
+  killBtn.style.background = '#0a0000';
+  document.getElementById('engineStatus').textContent = '⛔ CLOAKED';
+  document.getElementById('engineStatus').style.color = '#ff2200';
+
+  document.getElementById('modalTitle').textContent = '⛉ KILL SWITCH ACTIVATED';
+  document.getElementById('modalBody').innerHTML =
+    `<strong>6 pairs snapshotted</strong><br>
+     <strong>${totalOrders}</strong> orders preserved<br>
+     <strong>3</strong> backup nodes confirmed<br>
+     <strong>0</strong> data loss<br><br>
+     Engine cloaked at ${new Date().toISOString().substr(11,8)}`;
+  document.getElementById('resultModal').classList.remove('hidden');
+}
+
+function resetDemo() {
+  document.getElementById('resultModal').classList.add('hidden');
+  killBtn.disabled = false;
+  killBtn.className = 'kill-btn armed';
+  killBtn.textContent = '⛉ ACTIVATE KILL SWITCH';
+  killBtn.style = '';
+  document.getElementById('engineStatus').textContent = '🟢 ACTIVE';
+  document.getElementById('engineStatus').style.color = '';
+  updateThreat('GREEN');
+  document.querySelector('.grid .card:first-child').style.borderColor = '';
+  setPhase(0);
+  logEl.innerHTML = '';
+  log('System initialized — all modules nominal', 'info');
+  log('DAG consensus: online · 6 peers', 'info');
+  log('WAL replication: active · 3 replicas', 'info');
+  log('TEE enclave: SEALED_PROTECTED', 'info');
+  log('Kill Switch: ARMED — awaiting threat trigger', 'info');
+}
+
+// Simulate market data tick
+setInterval(() => {
+  pairs.forEach((_, i) => {
+    prices[i] *= 1 + (Math.random() - 0.5) * 0.0002;
+    bids[i] = Math.max(10, bids[i] + Math.floor((Math.random() - 0.5) * 4));
+    asks[i] = Math.max(10, asks[i] + Math.floor((Math.random() - 0.5) * 4));
+    volumes[i] = Math.max(1000, volumes[i] + Math.floor((Math.random() - 0.5) * 200));
+  });
+  renderBooks();
+}, 1000);
+
+renderBooks();
+resetDemo();
+</script>
+</body>
+</html>

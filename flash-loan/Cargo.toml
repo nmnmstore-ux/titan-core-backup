@@ -1,0 +1,33 @@
+[package]
+name = "the-bridge-flash-loan"
+version = "1.0.0"
+edition = "2021"
+description = "THE-BRIDGE Flash Loan Engine"
+
+[features]
+default = ["aave-v3"]
+aave-v3 = []
+uniswap-v3 = []
+full = ["aave-v3", "uniswap-v3"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+tiny-keccak = { workspace = true }
+the-bridge-core = { path = "../core" }

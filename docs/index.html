@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE-BRIDGE · Developer Portal</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0b0e17; color: #c9d1d9; font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }
+  .nav { background: #131a2b; border-bottom: 1px solid #1e2a45; padding: 16px 32px; display: flex; align-items: center; gap: 32px; }
+  .nav h1 { color: #00d4aa; font-size: 16px; letter-spacing: 0.5px; }
+  .nav a { color: #6b7a8f; text-decoration: none; font-size: 13px; }
+  .nav a:hover { color: #00d4aa; }
+  .hero { padding: 64px 32px; text-align: center; border-bottom: 1px solid #1e2a45; }
+  .hero h2 { font-size: 36px; color: #e6edf3; margin-bottom: 12px; }
+  .hero p { color: #6b7a8f; font-size: 16px; max-width: 600px; margin: 0 auto; line-height: 1.6; }
+  .hero .badge { display: inline-block; background: #00d4aa22; color: #00d4aa; border: 1px solid #00d4aa44; padding: 4px 12px; border-radius: 20px; font-size: 12px; margin-bottom: 16px; }
+  .content { max-width: 900px; margin: 0 auto; padding: 48px 32px; }
+  .section { margin-bottom: 48px; }
+  .section h3 { color: #e6edf3; font-size: 20px; margin-bottom: 16px; }
+  .section p { color: #6b7a8f; font-size: 14px; line-height: 1.7; margin-bottom: 16px; }
+  .card { background: #131a2b; border: 1px solid #1e2a45; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .card h4 { color: #e6edf3; font-size: 14px; margin-bottom: 8px; }
+  .card code { color: #00d4aa; font-size: 13px; display: block; background: #0b0e17; padding: 12px; border-radius: 4px; margin-top: 8px; overflow-x: auto; }
+  .card .method { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; margin-right: 8px; }
+  .method.get { background: #1a6f5f22; color: #00d4aa; border: 1px solid #00d4aa44; }
+  .method.post { background: #1a3f6f22; color: #58a6ff; border: 1px solid #58a6ff44; }
+  .method.delete { background: #6f1a1a22; color: #f85149; border: 1px solid #f8514944; }
+  .endpoint { margin-bottom: 8px; }
+  .endpoint .path { color: #e6edf3; font-family: 'SF Mono','Consolas',monospace; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: #6b7a8f; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid #1e2a45; }
+  td { padding: 8px; font-size: 13px; border-bottom: 1px solid #1e2a45; color: #c9d1d9; }
+  .footer { text-align: center; padding: 32px; color: #6b7a8f; font-size: 12px; border-top: 1px solid #1e2a45; }
+  .tier-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .tier-card { background: #131a2b; border: 1px solid #1e2a45; border-radius: 8px; padding: 20px; text-align: center; }
+  .tier-card .price { font-size: 28px; color: #00d4aa; font-weight: 600; }
+  .tier-card .price span { font-size: 14px; color: #6b7a8f; }
+  .tier-card .features { text-align: left; margin-top: 16px; }
+  .tier-card .features li { color: #6b7a8f; font-size: 12px; padding: 4px 0; list-style: none; }
+  .tier-card .features li:before { content: "✓ "; color: #00d4aa; }
+  .tier-card button { background: #00d4aa; color: #0b0e17; border: none; padding: 10px 24px; border-radius: 6px; font-size: 13px; font-weight: 600; margin-top: 16px; cursor: pointer; }
+  .tier-card button:hover { background: #00e6b5; }
+</style>
+</head>
+<body>
+<div class="nav">
+  <h1>⬡ THE-BRIDGE</h1>
+  <a href="#quickstart">Quickstart</a>
+  <a href="#api">API Reference</a>
+  <a href="#pricing">Pricing</a>
+  <a href="/dashboard">Dashboard</a>
+  <a href="/api/v1/health">Health</a>
+</div>
+
+<div class="hero">
+  <div class="badge">v1.0.0 · Alpha</div>
+  <h2>THE-BRIDGE Matching Engine</h2>
+  <p>1M+ TPS · &lt;35µs P99 · FIX 5.0 SP2 · DAG Consensus · Sovereign Privacy · WASM Hooks</p>
+</div>
+
+<div class="content">
+  <div class="section" id="quickstart">
+    <h3>⚡ Quickstart — 30 seconds to first order</h3>
+    <div class="card">
+      <h4>1. Get a free API key</h4>
+      <code>curl -X POST https://api.the-bridge.io/api/v1/auth/register \<br>
+  &nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+  &nbsp;&nbsp;-d '{"name":"test","email":"you@email.com","tier":"Free"}'</code>
+    </div>
+    <div class="card">
+      <h4>2. Deposit test funds</h4>
+      <code>export KEY="tb_xxxx..."<br>
+curl -X POST https://api.the-bridge.io/api/v1/wallet/deposit \<br>
+  &nbsp;&nbsp;-H "Authorization: Bearer $KEY" \<br>
+  &nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+  &nbsp;&nbsp;-d '{"amount":10000}'</code>
+    </div>
+    <div class="card">
+      <h4>3. Place your first order</h4>
+      <code>curl -X POST https://api.the-bridge.io/api/v1/order \<br>
+  &nbsp;&nbsp;-H "Authorization: Bearer $KEY" \<br>
+  &nbsp;&nbsp;-H "Content-Type: application/json" \<br>
+  &nbsp;&nbsp;-d '{"pair":"BTC-USDT","side":"Buy","price":65000,"quantity":0.01,"type":"Limit"}'</code>
+    </div>
+  </div>
+
+  <div class="section" id="api">
+    <h3>📡 API Reference (70+ endpoints)</h3>
+    <table>
+      <tr><th>Method</th><th>Path</th><th>Description</th></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/health</span></td><td>System health check</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/wallet/balance</span></td><td>Your balance & locked funds</td></tr>
+      <tr><td><span class="method post">POST</span></td><td class="endpoint"><span class="path">/api/v1/wallet/deposit</span></td><td>Deposit funds</td></tr>
+      <tr><td><span class="method post">POST</span></td><td class="endpoint"><span class="path">/api/v1/wallet/withdraw</span></td><td>Withdraw funds</td></tr>
+      <tr><td><span class="method post">POST</span></td><td class="endpoint"><span class="path">/api/v1/order</span></td><td>Place order (Limit/Market/Batch)</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/order/{id}</span></td><td>Get order status</td></tr>
+      <tr><td><span class="method delete">DELETE</span></td><td class="endpoint"><span class="path">/api/v1/order/{id}</span></td><td>Cancel order</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/orderbook/{pair}</span></td><td>Order book snapshot</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/orderbook/{pair}/depth</span></td><td>Market depth (10 levels)</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/ticker/{pair}</span></td><td>24h ticker</td></tr>
+      <tr><td><span class="method get">GET</span></td><td class="endpoint"><span class="path">/api/v1/metrics</span></td><td>Engine metrics</td></tr>
+    </table>
+    <p style="margin-top: 12px; color: #6b7a8f;">Full OpenAPI spec available at <code>/api/v1/openapi.json</code></p>
+  </div>
+
+  <div class="section" id="pricing">
+    <h3>💰 Pricing</h3>
+    <div class="tier-cards">
+      <div class="tier-card">
+        <h4>Free</h4>
+        <div class="price">$0<span>/month</span></div>
+        <ul class="features">
+          <li>100,000 orders/month</li>
+          <li>2 concurrent connections</li>
+          <li>REST API access</li>
+          <li>WebSocket market data</li>
+          <li>Basic order types</li>
+        </ul>
+        <button onclick="window.location.href='/api/v1/auth/register'">Get Started</button>
+      </div>
+      <div class="tier-card" style="border-color: #00d4aa44;">
+        <h4 style="color: #00d4aa;">Pro</h4>
+        <div class="price">$29<span>/month</span></div>
+        <ul class="features">
+          <li>10,000,000 orders/month</li>
+          <li>50 concurrent connections</li>
+          <li>REST + WebSocket + FIX</li>
+          <li>WASM hooks (basic)</li>
+          <li>$0.001 per additional 1K orders</li>
+        </ul>
+        <button onclick="window.location.href='/api/v1/auth/select-tier'">Upgrade</button>
+      </div>
+      <div class="tier-card" style="border-color: #ffd70044;">
+        <h4 style="color: #ffd700;">Enterprise</h4>
+        <div class="price">$999<span>/month</span></div>
+        <ul class="features">
+          <li>Unlimited orders</li>
+          <li>10,000 concurrent connections</li>
+          <li>Full FIX 5.0 SP2 + ISO 20022</li>
+          <li>WASM hooks (advanced)</li>
+          <li>DAG consensus + CRDT</li>
+          <li>Sovereign Kill Switch + Ghost Protocol</li>
+          <li>Dedicated support</li>
+        </ul>
+        <button onclick="window.location.href='/api/v1/auth/select-tier'">Contact Sales</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>🔐 Authentication</h3>
+    <div class="card">
+      <p>All API requests require a Bearer token in the Authorization header:</p>
+      <code>Authorization: Bearer tb_xxxx_yyyyy...</code>
+      <p style="margin-top: 12px;">Invalid or expired keys return <code>401 Unauthorized</code>.</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>📊 WebSocket Streams</h3>
+    <div class="card">
+      <h4>Live Orders & Fills</h4>
+      <code>wss://api.the-bridge.io/ws/orders</code>
+      <p style="margin-top: 8px;">Real-time fill notifications, order status updates, and market data.</p>
+    </div>
+    <div class="card">
+      <h4>Dashboard Metrics</h4>
+      <code>wss://api.the-bridge.io/ws/dashboard</code>
+      <p style="margin-top: 8px;">TPS, latency, active sessions, MRR tracking.</p>
+    </div>
+  </div>
+</div>
+
+<div class="footer">
+  THE-BRIDGE v1.0.0 · Built with Rust · Decentralized · Sovereign
+</div>
+</body>
+</html>
