@@ -129,7 +129,7 @@ impl BatchAuctionEngine {
 
         let merkle_root = self.compute_merkle_root(&matched_trades);
         let batch_id = format!("fba_{}", batch_number);
-        let timestamp_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let timestamp_ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
 
         let result = BatchAuctionResult {
             batch_id,
@@ -285,7 +285,7 @@ impl FBAMatchingEngine {
             price: (order.price * self.config.price_precision as f64) as u64,
             quantity: (order.quantity * self.config.price_precision as f64) as u64,
             track: order.track,
-            timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+            timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
         };
         self.batch_engine.submit_order(batch_order).await
     }

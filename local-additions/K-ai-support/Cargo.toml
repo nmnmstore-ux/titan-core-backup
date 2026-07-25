@@ -1,0 +1,22 @@
+[package]
+name = "swiftbridge-ai-support"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["tracing", "ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+futures = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"

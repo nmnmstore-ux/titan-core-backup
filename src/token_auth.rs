@@ -14,6 +14,8 @@ pub struct JwtClaims {
     pub sub: String,
     pub exp: u64,
     pub iat: u64,
+    pub iss: String,
+    pub aud: String,
     pub tier: String,
 }
 
@@ -37,12 +39,14 @@ impl TokenAuth {
         }
     }
 
-    pub fn create_access_token(&self, tenant_id: Uuid, tier: &str) -> String {
+    pub fn create_access_token(&self, tenant_id: Uuid, tier: &str) -> Result<String, String> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let claims = JwtClaims {
             sub: tenant_id.to_string(),
             exp: now + 900,      // 15 minutes
             iat: now,
+            iss: "the-bridge".into(),
+            aud: "the-bridge-api".into(),
             tier: tier.to_string(),
         };
         self.encode(&claims)
@@ -63,7 +67,7 @@ impl TokenAuth {
     pub fn validate_access_token(&self, token: &str) -> Option<JwtClaims> {
         self.decode(token).ok().filter(|c| {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-            c.exp > now
+            c.exp > now && c.iss == "the-bridge" && c.aud == "the-bridge-api"
         })
     }
 
@@ -78,20 +82,21 @@ impl TokenAuth {
         drop(store);
         self.refresh_store.write().remove(token);
         let tier = "pro";
-        let new_access = self.create_access_token(tenant_id, tier);
+        let new_access = self.create_access_token(tenant_id, tier).ok()?;
         let new_refresh = self.create_refresh_token(tenant_id);
         Some((new_access, new_refresh, tenant_id))
     }
 
-    fn encode(&self, claims: &JwtClaims) -> String {
+    fn encode(&self, claims: &JwtClaims) -> Result<String, String> {
         let header = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
         let payload_json = serde_json::to_string(claims).unwrap_or_default();
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload_json);
         let message = format!("{}.{}", header, payload);
-        let mut mac = HmacSha256::new_from_slice(&self.secret).expect("HMAC key");
+        let mut mac = HmacSha256::new_from_slice(&self.secret)
+            .map_err(|e| format!("HMAC key init: {}", e))?;
         mac.update(message.as_bytes());
         let sig = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-        format!("{}.{}.{}", header, payload, sig)
+        Ok(format!("{}.{}.{}", header, payload, sig))
     }
 
     fn decode(&self, token: &str) -> Result<JwtClaims, String> {

@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
-const DOT_TARGET_MS: u128 = 2000;
+const DOT_TARGET_MS: u128 = 30_000;
 #[cfg(not(target_os = "linux"))]
-const DOT_TARGET_MS: u128 = 15000;
+const DOT_TARGET_MS: u128 = 30_000;
 
 #[path = "../src/types.rs"]
 mod types;

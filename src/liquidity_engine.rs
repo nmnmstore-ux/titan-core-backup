@@ -343,7 +343,7 @@ impl LiquidityEngine {
                 let conn = VenueConnection {
                     venue_id: venue.venue_id.clone(),
                     connected: true,
-                    last_ping: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                    last_ping: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
                     messages_received: 0,
                     errors: 0,
                     subscriptions: venue.symbols.clone(),
@@ -359,7 +359,7 @@ impl LiquidityEngine {
         let mut pools = self.synthetic_pools.write().await;
         for pool in pools.values_mut() {
             pool.active = pool.config.base_assets.len() >= pool.config.min_participants as usize;
-            pool.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            pool.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             info!("Initialized synthetic pool: {} (active: {})", pool.pool_id, pool.active);
         }
         Ok(())
@@ -407,7 +407,7 @@ impl LiquidityEngine {
         let mut snapshots = self.snapshots.write().await;
         let snapshot = LiquiditySnapshot {
             symbol: symbol.to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             total_bid_volume: bids.iter().map(|b| b.volume).sum(),
             total_ask_volume: asks.iter().map(|a| a.volume).sum(),
             spread_bps: if !bids.is_empty() && !asks.is_empty() {
@@ -507,8 +507,8 @@ impl LiquidityEngine {
         }
         
         for book in aggregated.values_mut() {
-            book.bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap());
-            book.asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap());
+            book.bids.sort_by(|a, b| b.price.partial_cmp(&a.price).unwrap_or(std::cmp::Ordering::Equal));
+            book.asks.sort_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal));
             
             book.best_bid = book.bids.first().map(|l| l.price).unwrap_or(0.0);
             book.best_ask = book.asks.first().map(|l| l.price).unwrap_or(0.0);
@@ -572,7 +572,7 @@ impl LiquidityEngine {
                     .map(|(p, v)| p * v)
                     .sum::<f64>() / total_vol.max(1.0);
                 pool.composite_volume = total_vol;
-                pool.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                pool.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
                 
                 self.update_correlation_matrix(&mut pool.correlation_matrix, &prices).await;
             }
@@ -621,8 +621,8 @@ impl LiquidityEngine {
                 volume_target_usd: maker.quote_size_usd * 100.0,
                 achieved_volume_usd: maker.total_volume_usd,
                 reward_earned_usd: 0.0,
-                period_start: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 86400,
-                period_end: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 86400,
+                period_start: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() - 86400,
+                period_end: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() + 86400,
                 status: IncentiveStatus::Active,
             });
             

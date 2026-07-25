@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::time;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -508,7 +508,7 @@ impl ExecutionEngine {
             pnl.total_profit_usd += profit; pnl.total_cost_usd += cost;
             pnl.total_net_profit_usd += profit - cost;
             pnl.running_balance_usd += profit - cost;
-            let w = (86400u64 * 7);
+            let w = 86400u64 * 7;
             let m = 86400u64 * 30;
             if executed_at / 86400u64 == now / 86400u64 { pnl.daily_pnl += profit - cost; }
             if executed_at / w == now / w { pnl.weekly_pnl += profit - cost; }

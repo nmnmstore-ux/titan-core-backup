@@ -28,6 +28,8 @@ pub struct Registration {
 pub struct AuthGateway {
     registrations: RwLock<HashMap<String, Registration>>,
     tokens: RwLock<HashMap<String, String>>,
+    failed_attempts: RwLock<HashMap<String, (u32, std::time::Instant)>>,
+    token_expiry: RwLock<HashMap<String, i64>>,
 }
 
 impl AuthGateway {
@@ -35,6 +37,8 @@ impl AuthGateway {
         AuthGateway {
             registrations: RwLock::new(HashMap::new()),
             tokens: RwLock::new(HashMap::new()),
+            failed_attempts: RwLock::new(HashMap::new()),
+            token_expiry: RwLock::new(HashMap::new()),
         }
     }
 
@@ -72,6 +76,14 @@ impl AuthGateway {
     }
 
     pub fn verify_email(&self, token: &str) -> Result<Registration, String> {
+        {
+            let attempts = self.failed_attempts.read();
+            if let Some((count, since)) = attempts.get(token) {
+                if *count >= 10 && since.elapsed().as_secs() < 300 {
+                    return Err("too many failed attempts — try again in 5 minutes".into());
+                }
+            }
+        }
         let email: String = {
             let toks = self.tokens.read();
             toks.get(token).cloned().ok_or("invalid or expired token")?
@@ -82,6 +94,8 @@ impl AuthGateway {
             return Err("email already verified".into());
         }
         reg.step = RegistrationStep::EmailVerified;
+        let token_str = token.to_string();
+        self.token_expiry.write().insert(token_str, chrono::Utc::now().timestamp_millis() + 3600 * 1000);
         Ok(reg.clone())
     }
 

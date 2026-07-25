@@ -116,27 +116,27 @@ pub async fn security_headers_middleware(
 
     res.headers_mut().insert(
         axum::http::header::STRICT_TRANSPORT_SECURITY,
-        "max-age=31536000; includeSubDomains; preload".parse().unwrap(),
+        axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains; preload"),
     );
     res.headers_mut().insert(
         axum::http::header::X_CONTENT_TYPE_OPTIONS,
-        "nosniff".parse().unwrap(),
+        axum::http::HeaderValue::from_static("nosniff"),
     );
     res.headers_mut().insert(
         axum::http::header::X_FRAME_OPTIONS,
-        "DENY".parse().unwrap(),
+        axum::http::HeaderValue::from_static("DENY"),
     );
     res.headers_mut().insert(
         axum::http::header::REFERRER_POLICY,
-        "strict-origin-when-cross-origin".parse().unwrap(),
+        axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
     res.headers_mut().insert(
         axum::http::header::HeaderName::from_static("permissions-policy"),
-        "camera=(), microphone=(), geolocation=(), interest-cohort=()".parse().unwrap(),
+        axum::http::HeaderValue::from_static("camera=(), microphone=(), geolocation=(), interest-cohort="),
     );
     res.headers_mut().insert(
         axum::http::header::HeaderName::from_static("x-xss-protection"),
-        "0".parse().unwrap(),
+        axum::http::HeaderValue::from_static("0"),
     );
 
     res

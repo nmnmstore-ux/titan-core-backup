@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
-tracing = "0.1"
+tracing = { version = "0.1", features = ["attributes", "std"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
 parking_lot = "0.12"
@@ -75,7 +75,7 @@ num-rational = "0.4"
 num-traits = "0.2"
 rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
-snmalloc-rs = "0.3"
+
 wasmtime = "14"
 numa = "0.6"
 tikv-jemallocator = "0.6"
@@ -118,8 +118,21 @@ path = "src/main.rs"
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 
+[[test]]
+name = "fix_gateway_test"
+path = "tests/fix_gateway_test.rs"
+
+[[test]]
+name = "consensus_multinode_test"
+path = "tests/consensus_multinode_test.rs"
+
+[[test]]
+name = "load_test"
+path = "tests/load_test.rs"
+
 [features]
 default = []
+wasm = []
 flash-loan = []
 arbitrage = []
 mev = []
@@ -176,7 +189,7 @@ num-rational = { workspace = true }
 num-traits = { workspace = true }
 rust_decimal = { workspace = true }
 rust_decimal_macros = { workspace = true }
-snmalloc-rs = { workspace = true }
+
 wasmtime = { workspace = true }
 numa = { workspace = true }
 tikv-jemallocator = { workspace = true }
@@ -226,3 +239,4 @@ chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
+tempfile = "3"

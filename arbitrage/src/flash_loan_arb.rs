@@ -18,11 +18,6 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use the_bridge_core::{
-    Token, Price, Pool, OrderSide, OrderType, OrderStatus,
-    RevenueType, ExecutionStrategy, CoreError,
-    MIN_TICK, MAX_TICK, MIN_SQRT_RATIO, MAX_SQRT_RATIO,
-};
 use crate::PoolData;
 use the_bridge_flash_loan::{
     FlashLoanRouter, FlashLoanCallback, FlashLoanProvider as FLProvider,

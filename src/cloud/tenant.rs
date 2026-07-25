@@ -145,7 +145,8 @@ impl TenantManager {
         let prefix = tenant.api_key_prefix.clone();
         let id = tenant.id;
         self.tenants.insert(id, tenant);
-        let t = self.tenants.get(&id).unwrap();
+        let t = self.tenants.get(&id)
+            .ok_or_else(|| "tenant not found after insert".to_string())?;
         self.by_email.insert(t.email.clone(), t.id);
         self.by_prefix.insert(prefix, t.id);
         let cloned = Tenant::clone(&t);

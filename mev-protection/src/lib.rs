@@ -1,17 +1,12 @@
-use async_trait::async_trait;
 use chrono::Utc;
-use dashmap::DashMap;
-use hmac::{Hmac, Mac};
 use parking_lot::RwLock;
 use rand::Rng;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock as TokioRwLock;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 pub type Address = [u8; 20];
@@ -167,6 +162,7 @@ struct JsonRpcRequest<T: Serialize> {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcResponse<R> {
     jsonrpc: String,
     id: u64,
@@ -175,6 +171,7 @@ struct JsonRpcResponse<R> {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct JsonRpcError {
     code: i64,
     message: String,
@@ -583,6 +580,7 @@ impl MevShareClient {
 // Priority fee estimator
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 struct FeeDataPoint {
     priority_fee: U256,
     base_fee: U256,

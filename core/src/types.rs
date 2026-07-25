@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
@@ -37,22 +36,9 @@ pub struct Pool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrderSide { Buy, Sell }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrderType { Market, Limit, StopLoss, StopLimit, Iceberg }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OrderStatus { Pending, Partial, Filled, Cancelled, Expired, Rejected }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RevenueType { FlashLoanFee, ArbitrageProfit, MevShare, LiquidationFee, TradingFee, Subscription }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionStrategy { FlashLoan, DirectSwap, BatchSwap, MevBundle }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Order {
-    pub id: Uuid, pub user_id: Uuid, pub side: OrderSide, pub order_type: OrderType,
-    pub token: Token, pub price: Option<Price>, pub quantity: u128, pub filled: u128,
-    pub status: OrderStatus, pub created_at: u64,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevenueEvent {

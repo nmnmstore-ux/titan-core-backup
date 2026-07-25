@@ -763,7 +763,7 @@ impl ProfitOptimizer {
             return 0;
         }
         let fraction = kelly.min(1.0).max(0.0);
-        U256::from((((max_capital as f64) * fraction) as u128))
+        U256::from(((max_capital as f64) * fraction) as u128)
     }
 }
 

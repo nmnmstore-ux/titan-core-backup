@@ -175,8 +175,8 @@ impl RevenueEngine {
             total_rebates_earned_usd: 0,
             data_license_active: false,
             premium_tier_active: false,
-            joined_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            last_activity: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            joined_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+            last_activity: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             referral_code: referral_code.clone(),
             referred_by: referred_by.clone(),
             referral_earnings_usd: 0,
@@ -238,7 +238,7 @@ impl RevenueEngine {
 
         let breakdown = TradeRevenueBreakdown {
             trade_id: Uuid::new_v4().to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             participant_id: participant_id.to_string(),
             counterparty_id: counterparty_id.to_string(),
             symbol: symbol.to_string(),

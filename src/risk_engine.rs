@@ -323,7 +323,7 @@ impl RiskEngine {
                     _ => "Other".to_string(),
                 },
                 currency: "USD".to_string(),
-                last_updated: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                last_updated: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             });
         }
         
@@ -389,7 +389,7 @@ impl RiskEngine {
             risk_score: 0.1,
             risk_tier: RiskTier::Low,
             alerts: vec![],
-            last_updated: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            last_updated: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         };
         
         self.profiles.write().await.insert(participant_id.clone(), profile.clone());
@@ -578,7 +578,7 @@ impl RiskEngine {
         
         self.profiles.write().await.insert(participant_id.to_string(), profile.clone());
         
-        let new_alerts = profile.alerts.iter().filter(|a| a.triggered_at > SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 60).cloned().collect();
+        let new_alerts = profile.alerts.iter().filter(|a| a.triggered_at > SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() - 60).cloned().collect();
         
         Ok(PostTradeAnalysis {
             trade_id,
@@ -615,7 +615,7 @@ impl RiskEngine {
         
         profile.risk_score = self.calculate_risk_score(profile);
         profile.risk_tier = self.determine_risk_tier(profile.risk_score);
-        profile.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        profile.last_updated = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     }
 
     async fn calculate_portfolio_var(&self, profile: &ParticipantRiskProfile, horizon_days: u32, confidence: f64) -> f64 {
@@ -674,7 +674,7 @@ impl RiskEngine {
 
     async fn check_risk_limits(&self, profile: &mut ParticipantRiskProfile) {
         let mut new_alerts = Vec::new();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         if profile.leverage > self.config.max_leverage {
             new_alerts.push(RiskAlert {

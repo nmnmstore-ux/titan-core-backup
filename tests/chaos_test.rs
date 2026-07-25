@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::fs;
 use uuid::Uuid;
+use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
@@ -190,6 +191,8 @@ fn test_stop_loss_validation() {
         track: Track::Compliant,
         style: OrderStyle::TWAP { duration_secs: 60, interval_secs: 10 },
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     };
     assert_eq!(twap.style, OrderStyle::TWAP { duration_secs: 60, interval_secs: 10 });
 }
@@ -287,6 +290,8 @@ fn test_twap_order_lifecycle() {
         track: Track::Compliant,
         style: OrderStyle::TWAP { duration_secs: 60, interval_secs: 10 },
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     };
 
     let result = books.place_order(twap.clone()).unwrap();
@@ -407,6 +412,8 @@ fn test_orderbook_manager_advanced_orders() {
         track: Track::Compliant,
         style: OrderStyle::TWAP { duration_secs: 30, interval_secs: 5 },
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     };
 
     let _result = books.place_order(twap.clone()).unwrap();

@@ -100,7 +100,8 @@ impl BillingMeter {
         let pricing = TierPricing::for_tier(tier);
         let orders = self.get_order_count(tenant_id);
         let now = chrono::Utc::now().timestamp_millis();
-        let period_start = *self.period_start.lock().unwrap();
+        let period_start = *self.period_start.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let usage_cents = (orders as f64 * pricing.per_order_cents * 100.0) as u64;
         let total = pricing.monthly_price_cents + usage_cents;

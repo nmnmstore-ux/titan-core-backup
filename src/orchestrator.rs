@@ -348,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_orchestrator_integration() {
-        let crypto = Arc::new(ThresholdCrypto::new(3, 5));
+        let crypto = Arc::new(ThresholdCrypto::new(3, 5).unwrap());
         crypto.run_dkg(0);
         crypto.run_dkg(1);
 

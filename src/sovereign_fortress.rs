@@ -243,44 +243,48 @@ pub struct EncryptedCell {
 }
 
 impl EncryptedCell {
-    pub fn new(value: u64, key: &[u8; 32]) -> Self {
+    pub fn new(value: u64, key: &[u8; 32]) -> Result<Self, String> {
         let nonce: [u8; 12] = rand::random();
-        let cipher = Aes256Gcm::new_from_slice(key).expect("valid key");
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| format!("EncryptedCell key init: {}", e))?;
         let plaintext = value.to_le_bytes();
         let encrypted = cipher
             .encrypt(Nonce::from_slice(&nonce), plaintext.as_ref())
-            .expect("encrypt");
-        Self {
+            .map_err(|e| format!("EncryptedCell encrypt: {}", e))?;
+        Ok(Self {
             encrypted: parking_lot::RwLock::new(encrypted),
             nonce,
             key: key.to_vec(),
-        }
+        })
     }
 
-    pub fn read(&self) -> u64 {
-        let cipher = Aes256Gcm::new_from_slice(&self.key).expect("valid key");
+    pub fn read(&self) -> Result<u64, String> {
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|e| format!("EncryptedCell key init: {}", e))?;
         let decrypted = cipher
             .decrypt(Nonce::from_slice(&self.nonce), self.encrypted.read().as_ref())
-            .expect("decrypt");
+            .map_err(|e| format!("EncryptedCell decrypt: {}", e))?;
         let mut arr = [0u8; 8];
         arr.copy_from_slice(&decrypted[..8]);
-        u64::from_le_bytes(arr)
+        Ok(u64::from_le_bytes(arr))
     }
 
-    pub fn write(&self, value: u64) {
-        let cipher = Aes256Gcm::new_from_slice(&self.key).expect("valid key");
+    pub fn write(&self, value: u64) -> Result<(), String> {
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|e| format!("EncryptedCell key init: {}", e))?;
         let plaintext = value.to_le_bytes();
         let encrypted = cipher
             .encrypt(Nonce::from_slice(&self.nonce), plaintext.as_ref())
-            .expect("encrypt");
+            .map_err(|e| format!("EncryptedCell encrypt: {}", e))?;
         *self.encrypted.write() = encrypted;
+        Ok(())
     }
 
-    pub fn add(&self, delta: u64) -> u64 {
-        let current = self.read();
+    pub fn add(&self, delta: u64) -> Result<u64, String> {
+        let current = self.read()?;
         let new = current.saturating_add(delta);
-        self.write(new);
-        new
+        self.write(new)?;
+        Ok(new)
     }
 }
 
@@ -293,29 +297,29 @@ pub struct FortressTreasury {
 }
 
 impl FortressTreasury {
-    pub fn new(tee_seed: &[u8; 32]) -> Self {
+    pub fn new(tee_seed: &[u8; 32]) -> Result<Self, String> {
         let key = Self::derive_key(tee_seed);
-        Self {
-            encrypted_total: EncryptedCell::new(0, &key),
+        Ok(Self {
+            encrypted_total: EncryptedCell::new(0, &key)?,
             key,
-        }
+        })
     }
 
-    pub fn balance(&self) -> u64 {
+    pub fn balance(&self) -> Result<u64, String> {
         self.encrypted_total.read()
     }
 
-    pub fn deposit(&self, amount: u64) -> u64 {
+    pub fn deposit(&self, amount: u64) -> Result<u64, String> {
         self.encrypted_total.add(amount)
     }
 
     pub fn withdraw(&self, amount: u64) -> Result<u64, String> {
-        let current = self.encrypted_total.read();
+        let current = self.encrypted_total.read()?;
         if amount > current {
             return Err("insufficient fortified balance".to_string());
         }
         let new = current - amount;
-        self.encrypted_total.write(new);
+        self.encrypted_total.write(new)?;
         Ok(new)
     }
 
@@ -358,14 +362,14 @@ pub struct FortressStatus {
 }
 
 impl SovereignFortress {
-    pub fn new(tee_seed: &[u8; 32]) -> Self {
-        Self {
+    pub fn new(tee_seed: &[u8; 32]) -> Result<Self, String> {
+        Ok(Self {
             audit: AuditTrail::new(),
             dead_mans_switch: DeadMansSwitch::new(),
-            treasury: FortressTreasury::new(tee_seed),
+            treasury: FortressTreasury::new(tee_seed)?,
             active_threats: AtomicU64::new(0),
             self_heal_count: AtomicU64::new(0),
-        }
+        })
     }
 
     /// Record a sovereign action in the immutable audit trail.
@@ -418,7 +422,7 @@ impl SovereignFortress {
             switch_state: self.dead_mans_switch.state().to_string(),
             last_heartbeat_ago_secs: chrono::Utc::now().timestamp() - last_hb,
             trigger_count: self.dead_mans_switch.trigger_count(),
-            treasury_balance: self.treasury.balance(),
+            treasury_balance: self.treasury.balance().unwrap_or(0),
             active_threats: self.active_threats.load(Ordering::Relaxed),
             self_heal_count: self.self_heal_count.load(Ordering::Relaxed),
             succession_plan_configured: self.dead_mans_switch.succession_plan().is_some(),

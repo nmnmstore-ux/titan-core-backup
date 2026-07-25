@@ -71,9 +71,10 @@ pub struct ThresholdCrypto {
 }
 
 impl ThresholdCrypto {
-    pub fn new(threshold: usize, total_validators: usize) -> Self {
+    pub fn new(threshold: usize, total_validators: usize) -> Result<Self, String> {
         let generator = vec![2];
-        let prime = hex::decode("ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff").unwrap();
+        let prime = hex::decode("ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552bb9ed529077096966d670c354e4abc9804f1746c08ca237327ffffffffffffffff")
+            .map_err(|e| format!("DHPrime hex decode: {}", e))?;
 
         let mut rng = rand::thread_rng();
         let mut validator_pubkeys = Vec::new();
@@ -93,7 +94,7 @@ impl ThresholdCrypto {
             group_pubkey,
         };
 
-        Self { params, secret_share: Mutex::new(None) }
+        Ok(Self { params, secret_share: Mutex::new(None) })
     }
 
     fn compute_group_pubkey(pubkeys: &[Vec<u8>]) -> Vec<u8> {
@@ -130,11 +131,12 @@ impl ThresholdCrypto {
         &self.params
     }
 
-    pub fn encrypt_order(&self, order: &DecryptedOrder) -> EncryptedOrder {
+    pub fn encrypt_order(&self, order: &DecryptedOrder) -> Result<EncryptedOrder, String> {
         let mut rng = rand::thread_rng();
         let ephemeral: [u8; 32] = rng.gen();
 
-        let plaintext = serde_json::to_vec(order).unwrap();
+        let plaintext = serde_json::to_vec(order)
+            .map_err(|e| format!("encrypt_order serialize: {}", e))?;
         let shared_secret = Self::ecdh(&ephemeral, &self.params.group_pubkey);
 
         let mut ciphertext = Vec::new();
@@ -145,14 +147,19 @@ impl ThresholdCrypto {
         let commitment = Self::commit(&ciphertext, &ephemeral);
         let proof = Self::generate_zk_proof(&ciphertext, &ephemeral, &commitment, &plaintext, &shared_secret);
 
-        EncryptedOrder {
+        let timestamp_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        Ok(EncryptedOrder {
             order_id: order.order_id.clone(),
             ciphertext,
             ephemeral_pubkey: ephemeral.to_vec(),
             commitment,
             proof,
-            timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
-        }
+            timestamp_ns,
+        })
     }
 
     pub fn verify_encrypted_order(&self, encrypted: &EncryptedOrder) -> bool {

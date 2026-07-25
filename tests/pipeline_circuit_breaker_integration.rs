@@ -1,4 +1,5 @@
 use uuid::Uuid;
+use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
@@ -19,7 +20,7 @@ fn make_order(pair: &str, price: f64, qty: f64, track: types::Track) -> types::O
     types::Order {
         id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
-        pair: types::CompactString::from(pair),
+        pair: CompactString::from(pair),
         order_type: types::OrderType::Limit,
         side: types::OrderSide::Buy,
         price,
@@ -40,6 +41,8 @@ fn make_order(pair: &str, price: f64, qty: f64, track: types::Track) -> types::O
         track,
         style: types::OrderStyle::Standard,
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     }
 }
 

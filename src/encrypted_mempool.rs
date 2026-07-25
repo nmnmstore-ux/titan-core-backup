@@ -89,13 +89,13 @@ impl EncryptedMempool {
             receipts.push(ValidatorReceipt {
                 validator_id: i,
                 signature: sig.to_vec(),
-                timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+                timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
             });
         }
 
         let mempool_order = MempoolOrder {
             encrypted_order: encrypted_order.clone(),
-            received_at_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+            received_at_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
             priority_fee,
             validator_receipts: receipts,
         };
@@ -107,12 +107,12 @@ impl EncryptedMempool {
         Ok(encrypted_order.order_id)
     }
 
-    pub fn encrypt_order(&self, order: &DecryptedOrder) -> EncryptedOrder {
+    pub fn encrypt_order(&self, order: &DecryptedOrder) -> Result<EncryptedOrder, String> {
         self.crypto.encrypt_order(order)
     }
 
     async fn get_current_batch_key(&self) -> u64 {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
         now / self.batch_interval_ms
     }
 
@@ -236,7 +236,7 @@ impl EncryptedMempool {
         let header = BatchHeader {
             batch_id: format!("batch_{}", batch_number),
             batch_number,
-            timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+            timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
             order_count: orders.len(),
             clearing_price,
             total_volume,
@@ -294,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mempool_submit_and_batch() {
-        let crypto = Arc::new(ThresholdCrypto::new(2, 3));
+        let crypto = Arc::new(ThresholdCrypto::new(2, 3).unwrap());
         crypto.run_dkg(0);
         crypto.run_dkg(1);
 
@@ -311,7 +311,7 @@ mod tests {
             nonce: 1,
         };
 
-        let encrypted = mempool.crypto.encrypt_order(&order);
+        let encrypted = mempool.crypto.encrypt_order(&order).unwrap();
         let result = mempool.submit_encrypted_order(encrypted, 1000).await;
         assert!(result.is_ok());
 
@@ -321,7 +321,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_auction_matching() {
-        let crypto = Arc::new(ThresholdCrypto::new(2, 3));
+        let crypto = Arc::new(ThresholdCrypto::new(2, 3).unwrap());
         crypto.run_dkg(0);
         crypto.run_dkg(1);
 

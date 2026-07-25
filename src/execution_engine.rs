@@ -480,7 +480,7 @@ impl ExecutionEngine {
         validated.remaining_quantity = order.quantity;
         validated.filled_quantity = 0.0;
         validated.status = OrderStatus::New;
-        validated.created_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        validated.created_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         validated.updated_at = validated.created_at;
         
         Ok(validated)
@@ -528,7 +528,7 @@ impl ExecutionEngine {
             venue: "SMART_ROUTER".to_string(),
             fee_usd: total_fees,
             fee_asset: "USD".to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             liquidity_flag: if total_filled >= order.quantity { LiquidityFlag::Taker } else { LiquidityFlag::Taker },
             price_improvement_bps: price_improvement,
             slippage_bps,
@@ -601,7 +601,7 @@ impl ExecutionEngine {
             estimated_latency_ms,
             mev_risk_score,
             confidence: 0.9,
-            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         })
     }
 
@@ -627,7 +627,7 @@ impl ExecutionEngine {
             venue: leg.venue_id.clone(),
             fee_usd: fee,
             fee_asset: "USD".to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             liquidity_flag: LiquidityFlag::Taker,
             price_improvement_bps: self.config.price_improvement_target_bps as f64,
             slippage_bps: 1.0,
@@ -660,7 +660,7 @@ impl ExecutionEngine {
             venue: venue.venue_id,
             fee_usd: fee,
             fee_asset: "USD".to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             liquidity_flag: LiquidityFlag::Internalized,
             price_improvement_bps: self.config.price_improvement_target_bps as f64,
             slippage_bps: 0.0,
@@ -676,7 +676,7 @@ impl ExecutionEngine {
         let state = AlgoExecutionState {
             order_id: order.order_id.clone(),
             algo_type: order.order_type.clone(),
-            next_execution_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            next_execution_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             remaining_quantity: order.quantity,
             executed_quantity: 0.0,
             avg_price: 0.0,
@@ -703,7 +703,7 @@ impl ExecutionEngine {
             venue: "ALGO_ENGINE".to_string(),
             fee_usd: 0.0,
             fee_asset: "USD".to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             liquidity_flag: LiquidityFlag::Maker,
             price_improvement_bps: 0.0,
             slippage_bps: 0.0,
@@ -719,7 +719,7 @@ impl ExecutionEngine {
         let mut orders = self.orders.write().await;
         if let Some(order) = orders.get_mut(order_id) {
             order.status = OrderStatus::Cancelled;
-            order.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            order.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             
             self.active_algos.write().await.remove(order_id);
             
@@ -739,7 +739,7 @@ impl ExecutionEngine {
                 venue: "CANCELLED".to_string(),
                 fee_usd: 0.0,
                 fee_asset: "USD".to_string(),
-                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+                timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
                 liquidity_flag: LiquidityFlag::Maker,
                 price_improvement_bps: 0.0,
                 slippage_bps: 0.0,

@@ -12,6 +12,7 @@ fn i32_to_track(v: i32) -> Track {
         _ => Track::Compliant,
     }
 }
+use compact_str::CompactString;
 use serde_json;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use tracing::info;
@@ -304,6 +305,8 @@ impl OrderRow {
             track,
             style,
             hidden_remaining: self.hidden_remaining,
+            client_order_id: None,
+            filled_quantity: 0,
         })
     }
 }

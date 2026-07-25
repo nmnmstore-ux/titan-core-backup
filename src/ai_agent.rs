@@ -2,11 +2,10 @@ use crate::cloud::CloudOrchestrator;
 use crate::kyc::ComplianceGateway;
 use crate::orderbook::OrderBookManager;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use parking_lot::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 // ==================== System Prompt ====================
@@ -80,6 +79,7 @@ pub enum AiTool {
 }
 
 impl AiTool {
+    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             AiTool::SystemHealth => "system_health",

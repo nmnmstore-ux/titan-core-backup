@@ -1,6 +1,4 @@
-use async_trait::async_trait;
 use chrono::Utc;
-use dashmap::DashMap;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use parking_lot::RwLock;
 use rand::Rng;
@@ -10,7 +8,6 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 pub type Address = [u8; 20];
 pub type H256 = [u8; 32];
@@ -131,6 +128,7 @@ impl ChaosExperiment {
 }
 pub enum OracleStat { Healthy, Poisoned(u64), Unknown }
 pub struct SystemHealth { pub ok: bool, pub oracle: OracleStat, pub active: usize, pub last: u64 }
+#[allow(dead_code)]
 pub struct ChaosEngine {
     oracle: Arc<OraclePricePoisoning>, recovery: Arc<RwLock<UnilateralRecovery>>,
     timelock: Arc<RwLock<TimeLockedTransaction>>, metrics: Arc<RwLock<u64>>,

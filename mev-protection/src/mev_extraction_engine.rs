@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock as TokioRwLock;
 use tokio::time;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 pub type Address = [u8; 20];
@@ -370,7 +370,7 @@ impl PoolPriceOracle {
     async fn fetch_pool_price(&self, pool_addr: &str) -> Option<PoolPrice> {
         let slot0_data = "0x3850c7bd";
         let liq_data = "0xbc25cf77";
-        let addr = pool_addr.trim_start_matches("0x");
+        let _addr = pool_addr.trim_start_matches("0x");
         let payload = serde_json::json!([{
             "jsonrpc": "2.0", "method": "eth_call",
             "params": [{"to": pool_addr, "data": slot0_data}, "latest"],
@@ -502,7 +502,7 @@ impl OpportunityDetector {
         opportunities
     }
 
-    async fn estimate_sandwich_profit(&self, tx: &PendingTx, decoded: &DecodedTx) -> f64 {
+    async fn estimate_sandwich_profit(&self, _tx: &PendingTx, decoded: &DecodedTx) -> f64 {
         let pool_price = if let Some(ref pool) = decoded.to_address {
             self.oracle.get_price(pool).await.map(|p| p.price_usd).unwrap_or(2000.0)
         } else { 2000.0 };
@@ -668,6 +668,7 @@ impl BundleExecutor {
 // MevExtractionEngine — main orchestrator
 // ═══════════════════════════════════════════════════════════════════════════
 
+#[allow(dead_code)]
 pub struct MevExtractionEngine {
     pub config: MevExtractionConfig,
     pub mempool: Arc<MempoolMonitor>,

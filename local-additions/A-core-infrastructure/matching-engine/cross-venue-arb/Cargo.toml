@@ -1,0 +1,14 @@
+[package]
+name = "the-bridge-cross-venue-arb"
+version = "1.0.0"
+edition = "2021"
+description = "THE-BRIDGE Cross-Venue Arbitrage Engine (Binance + Coinbase + Uniswap)"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }

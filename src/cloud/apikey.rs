@@ -16,15 +16,16 @@ pub struct ApiKey {
 }
 
 impl ApiKey {
-    pub fn new(tenant_id: Uuid, secret: &[u8]) -> Self {
+    pub fn new(tenant_id: Uuid, secret: &[u8]) -> Result<Self, String> {
         let key_id = Uuid::new_v4();
         let prefix = hex::encode(&key_id.as_bytes()[..4]);
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC key");
+        let mut mac = HmacSha256::new_from_slice(secret)
+            .map_err(|e| format!("HMAC key init: {}", e))?;
         mac.update(prefix.as_bytes());
         mac.update(tenant_id.as_bytes());
         let key_hash = mac.finalize().into_bytes().to_vec();
 
-        Self {
+        Ok(Self {
             key_id,
             tenant_id,
             prefix,
@@ -32,14 +33,15 @@ impl ApiKey {
             created_at: chrono::Utc::now().timestamp_millis(),
             expires_at: chrono::Utc::now().timestamp_millis() + 365 * 24 * 3600 * 1000,
             active: true,
-        }
+        })
     }
 
-    pub fn verify(&self, secret: &[u8]) -> bool {
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC key");
+    pub fn verify(&self, secret: &[u8]) -> Result<bool, String> {
+        let mut mac = HmacSha256::new_from_slice(secret)
+            .map_err(|e| format!("HMAC key init: {}", e))?;
         mac.update(self.prefix.as_bytes());
         mac.update(self.tenant_id.as_bytes());
-        mac.verify_slice(&self.key_hash).is_ok()
+        Ok(mac.verify_slice(&self.key_hash).is_ok())
     }
 
     pub fn full_key(&self, _secret: &[u8]) -> String {
@@ -63,12 +65,14 @@ impl ApiKeyManager {
     }
 
     pub fn create_key(&self, tenant_id: Uuid) -> Result<(ApiKey, String), String> {
-        let key = ApiKey::new(tenant_id, &self.master_secret);
+        let key = ApiKey::new(tenant_id, &self.master_secret)?;
         let full = key.full_key(&self.master_secret);
         let prefix = key.prefix.clone();
         let key_id = key.key_id;
         self.keys.insert(key_id, key);
-        let stored = ApiKey::clone(&self.keys.get(&key_id).unwrap());
+        let stored = self.keys.get(&key_id)
+            .ok_or_else(|| "ApiKey not found after insert".to_string())?;
+        let stored = ApiKey::clone(&stored);
         self.by_prefix.insert(prefix, stored.key_id);
         Ok((stored.clone(), full))
     }

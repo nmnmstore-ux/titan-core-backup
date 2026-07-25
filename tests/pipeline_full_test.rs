@@ -63,6 +63,8 @@ fn make_order(side: OrderSide, price: f64, qty: f64, track: Track) -> Order {
         track,
         style: OrderStyle::Standard,
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     }
 }
 

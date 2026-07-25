@@ -214,6 +214,6 @@ trait TenantFinder {
 
 impl TenantFinder for TenantManager {
     fn find_by_stripe_id(&self, _stripe_id: &str) -> Option<Tenant> {
-        self.list_tenants().into_iter().next()
+        None
     }
 }

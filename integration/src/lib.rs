@@ -5,10 +5,10 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 pub type Address = [u8; 20];
 pub type H256 = [u8; 32];
@@ -65,6 +65,7 @@ pub trait ComponentLifecycle: Send + Sync {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct HealthAggregator { reports: Arc<DashMap<String,HealthReport>>, bus: Option<Arc<EventBus>>, interval: Duration, threshold: u32 }
 impl HealthAggregator {
     pub fn new(interval: Duration, threshold: u32) -> Self { Self{reports:Arc::new(DashMap::new()),bus:None,interval,threshold} }
@@ -85,6 +86,7 @@ impl HealthAggregator {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct MetricsCollector { component: String, gauges: Arc<DashMap<String,f64>>, counters: Arc<DashMap<String,u64>>, hists: Arc<DashMap<String,Vec<f64>>>, bus: Option<Arc<EventBus>>, max_samples: usize }
 impl MetricsCollector {
     pub fn new(component: &str) -> Self { Self{component:component.into(),gauges:Arc::new(DashMap::new()),counters:Arc::new(DashMap::new()),hists:Arc::new(DashMap::new()),bus:None,max_samples:1000} }

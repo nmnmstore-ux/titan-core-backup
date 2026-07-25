@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use uuid::Uuid;
+use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
@@ -23,7 +24,7 @@ fn sample_order() -> Order {
     Order {
         id: Uuid::new_v4(),
         user_id: Uuid::new_v4(),
-        pair: types::CompactString::from("USD/EGP"),
+        pair: CompactString::from("USD/EGP"),
         side: types::OrderSide::Buy,
         price: 30.50,
         quantity: 100.0,
@@ -44,6 +45,8 @@ fn sample_order() -> Order {
         track: types::Track::Compliant,
         style: types::OrderStyle::Standard,
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     }
 }
 
@@ -51,20 +54,20 @@ fn sample_order() -> Order {
 async fn test_dag_vertex_sign_verify() {
     let (sk, pk) = test_keypair();
     let op = ConsensusOp::PlaceOrder(sample_order());
-    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1");
+    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1", pk.to_vec());
     vertex.sign(&ed25519_dalek::SigningKey::from_bytes(&sk));
     assert!(vertex.verify(&ed25519_dalek::VerifyingKey::from_bytes(&pk).unwrap()));
 }
 
 #[tokio::test]
 async fn test_dag_vertex_sign_verify_tampered() {
-    let (sk, _pk) = test_keypair();
+    let (sk, pk) = test_keypair();
     let pk2 = {
         let sk2 = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng);
         sk2.verifying_key()
     };
     let op = ConsensusOp::PlaceOrder(sample_order());
-    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1");
+    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1", pk.to_vec());
     vertex.sign(&ed25519_dalek::SigningKey::from_bytes(&sk));
     assert!(!vertex.verify(&pk2));
 }
@@ -97,7 +100,7 @@ async fn test_dag_consensus_with_verification() {
 
     let op = ConsensusOp::PlaceOrder(sample_order());
     let parents = consensus.select_tips().await;
-    let mut vertex = DAGVertex::new_now(op, parents, "test-node-1");
+    let mut vertex = DAGVertex::new_now(op, parents, "test-node-1", pk.to_vec());
     vertex.sign(&ed25519_dalek::SigningKey::from_bytes(&sk));
 
     consensus.submit_with_verification(vertex).await;
@@ -105,7 +108,7 @@ async fn test_dag_consensus_with_verification() {
 
     let op2 = ConsensusOp::CancelOrder(Uuid::new_v4());
     let parents2 = consensus.select_tips().await;
-    let mut vertex2 = DAGVertex::new_now(op2, parents2, "test-node-1");
+    let mut vertex2 = DAGVertex::new_now(op2, parents2, "test-node-1", pk.to_vec());
     vertex2.sign(&ed25519_dalek::SigningKey::from_bytes(&sk));
 
     consensus.submit_with_verification(vertex2).await;
@@ -114,23 +117,23 @@ async fn test_dag_consensus_with_verification() {
 
 #[tokio::test]
 async fn test_dag_consensus_rejects_invalid_signature() {
-    let (sk1, _pk1) = test_keypair();
+    let (sk1, pk1) = test_keypair();
     let (_sk2, pk2) = test_keypair();
     let consensus = Arc::new(DAGConsensus::new("test-node-1", vec![], &sk1));
 
     let op = ConsensusOp::PlaceOrder(sample_order());
-    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1");
+    let mut vertex = DAGVertex::new_now(op, vec![], "test-node-1", pk1.to_vec());
     vertex.sign(&ed25519_dalek::SigningKey::from_bytes(&sk1));
 
     consensus.submit_with_verification(vertex).await;
     assert_eq!(consensus.num_vertices().await, 1);
 
     let op2 = ConsensusOp::PlaceOrder(sample_order());
-    let mut vertex2 = DAGVertex::new_now(op2, vec![], "different-node");
+    let mut vertex2 = DAGVertex::new_now(op2, vec![], "different-node", pk2.to_vec());
     vertex2.sign(&ed25519_dalek::SigningKey::from_bytes(&sk1));
 
     consensus.submit_with_verification(vertex2).await;
-    assert_eq!(consensus.num_vertices().await, 2);
+    assert_eq!(consensus.num_vertices().await, 1);
 }
 
 #[tokio::test]

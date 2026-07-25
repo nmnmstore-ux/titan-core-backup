@@ -1,0 +1,28 @@
+[package]
+name = "the-bridge-mev-protection"
+version = "1.0.0"
+edition = "2021"
+description = "THE-BRIDGE MEV Protection"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+dashmap = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+tokio-stream = { workspace = true }
+the-bridge-core = { path = "../core" }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

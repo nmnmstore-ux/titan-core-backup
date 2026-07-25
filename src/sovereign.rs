@@ -60,7 +60,7 @@ impl SovereignIdentityStore {
         let shared = ephemeral_secret.diffie_hellman(&self.regulator_public);
         let shared_bytes = shared.as_bytes();
 
-        let aes_key = hkdf_extract_expand(shared_bytes, SOVEREIGN_SALT, SOVEREIGN_INFO);
+        let aes_key = hkdf_extract_expand(shared_bytes, SOVEREIGN_SALT, SOVEREIGN_INFO)?;
 
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
@@ -117,7 +117,7 @@ impl SovereignIdentityStore {
 
         let shared_secret = x25519_dalek::x25519(arr, pub_arr);
 
-        let aes_key = hkdf_extract_expand(&shared_secret, SOVEREIGN_SALT, SOVEREIGN_INFO);
+        let aes_key = hkdf_extract_expand(&shared_secret, SOVEREIGN_SALT, SOVEREIGN_INFO)?;
 
         if identity.encrypted_blob.len() < NONCE_SIZE {
             return Err("ciphertext too short".to_string());
@@ -141,20 +141,20 @@ impl SovereignIdentityStore {
     }
 }
 
-fn hkdf_extract_expand(ikm: &[u8; 32], salt: &[u8], info: &[u8]) -> [u8; 32] {
+fn hkdf_extract_expand(ikm: &[u8; 32], salt: &[u8], info: &[u8]) -> Result<[u8; 32], String> {
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(salt)
-        .expect("HMAC key from salt");
+        .map_err(|e| format!("HMAC salt key error: {}", e))?;
     mac.update(ikm);
     let prk = mac.finalize().into_bytes();
 
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&prk)
-        .expect("HMAC key from prk");
+        .map_err(|e| format!("HMAC prk key error: {}", e))?;
     mac.update(info);
     mac.update(&[0x01]);
     let output = mac.finalize().into_bytes();
     let mut okm = [0u8; 32];
     okm.copy_from_slice(&output[..32]);
-    okm
+    Ok(okm)
 }
 
 pub fn generate_regulator_keypair_hex() -> (String, String) {

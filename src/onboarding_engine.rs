@@ -798,7 +798,7 @@ impl OnboardingEngine {
         }
 
         let client_id = format!("CLIENT_{}", Uuid::new_v4().to_string()[..12].to_uppercase());
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         let client = InstitutionalClient {
             client_id: client_id.clone(),
@@ -920,7 +920,7 @@ impl OnboardingEngine {
             workflow_id: format!("WF_{}", client.client_id),
             client_id: client.client_id.clone(),
             current_stage: OnboardingStatus::DocumentCollection,
-            stage_started_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            stage_started_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             stage_sla_hours: self.config.onboarding_sla_hours / stages.len() as u32,
             completed_stages: vec![],
             pending_tasks: stages.iter().map(|s| format!("{:?}", s)).collect(),
@@ -935,7 +935,7 @@ impl OnboardingEngine {
     async fn add_audit_entry(&self, client: &InstitutionalClient, action: &str, stage: OnboardingStatus, details: &str) {
         let entry = AuditEntry {
             entry_id: Uuid::new_v4().to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             actor: "SYSTEM".to_string(),
             action: action.to_string(),
             stage,
@@ -969,7 +969,7 @@ impl OnboardingEngine {
             assigned_to: None,
             status: VerificationStatus::Queued,
             priority: 5,
-            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             started_at: None,
             completed_at: None,
             ai_result: None,
@@ -1000,14 +1000,14 @@ impl OnboardingEngine {
         for (i, task) in queue.iter_mut().enumerate() {
             if task.status == VerificationStatus::Queued {
                 task.status = VerificationStatus::AIProcessing;
-                task.started_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                task.started_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
                 
                 let ai_result = self.ai_verify_document(task).await;
                 task.ai_result = Some(ai_result.clone());
                 
                 if ai_result.verified && ai_result.confidence > 0.95 {
                     task.status = VerificationStatus::Approved;
-                    task.completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                    task.completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
                 } else {
                     task.status = VerificationStatus::HumanReview;
                 }
@@ -1032,7 +1032,7 @@ impl OnboardingEngine {
             ]),
             anomalies_detected: vec![],
             model_version: "doc-verify-v2.1".to_string(),
-            processed_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            processed_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         }
     }
 
@@ -1042,11 +1042,11 @@ impl OnboardingEngine {
             if let Some(doc) = client.documents.iter_mut().find(|d| d.document_id == document_id) {
                 match status {
                     VerificationStatus::Approved => {
-                        doc.verified_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                        doc.verified_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
                         doc.ai_verified = true;
                     }
                     VerificationStatus::Rejected => {
-                        doc.verified_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+                        doc.verified_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
                         doc.ai_verified = false;
                     }
                     _ => {}
@@ -1067,7 +1067,7 @@ impl OnboardingEngine {
         let wf_id = format!("WF_{}", client_id);
         
         if let Some(wf) = workflows.active_workflows.get_mut(&wf_id) {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
             let previous_stage = wf.current_stage.clone();
             
             wf.completed_stages.push(CompletedStage {
@@ -1098,9 +1098,9 @@ impl OnboardingEngine {
             if let Some(wf) = workflows.active_workflows.get(&wf_id) {
                 client.status = wf.current_stage.clone();
                 if wf.current_stage == OnboardingStatus::Activated {
-                    client.onboarding_completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                    client.kyc_completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
-                    client.kyc_expires_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 365 * 24 * 3600);
+                    client.onboarding_completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
+                    client.kyc_completed_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
+                    client.kyc_expires_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() + 365 * 24 * 3600);
                 }
             }
         }
@@ -1135,8 +1135,8 @@ impl OnboardingEngine {
             supported_products: pb_config.supported_assets.clone(),
             reporting_frequency: ReportingFrequency::Daily,
             status: AccountStatus::Pending,
-            opened_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            last_reviewed_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            opened_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+            last_reviewed_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         };
         
         self.prime_broker_accounts.write().await.insert(account.account_id.clone(), account.clone());
@@ -1211,7 +1211,7 @@ impl OnboardingEngine {
                 minimum_loan_size_usd: 100_000.0,
             },
             status: AccountStatus::Pending,
-            opened_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            opened_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         };
         
         self.custodian_accounts.write().await.insert(account.account_id.clone(), account.clone());
@@ -1239,7 +1239,7 @@ impl OnboardingEngine {
 
     async fn process_workflows(&self) {
         let mut workflows = self.workflow_engine.write().await;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         let workflow_ids: Vec<String> = workflows.active_workflows.keys().cloned().collect();
         
@@ -1285,7 +1285,7 @@ impl OnboardingEngine {
         metrics.total_expected_volume_usd = clients.values().map(|c| c.expected_monthly_volume_usd).sum();
         
         let completed: Vec<_> = workflows.completed_workflows.iter()
-            .filter(|w| w.completed_stages.last().map(|s| s.completed_at).unwrap_or(0) > SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 2592000)
+            .filter(|w| w.completed_stages.last().map(|s| s.completed_at).unwrap_or(0) > SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() - 2592000)
             .collect();
         
         metrics.completed_this_month = completed.len() as u32;

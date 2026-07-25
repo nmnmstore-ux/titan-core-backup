@@ -986,7 +986,8 @@ pub async fn login_handler(
 ) -> Result<Json<LoginRes>, (StatusCode, Json<serde_json::Value>)> {
     let api_key = state.api_keys.validate_key(&req.api_key)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid key"}))))?;
-    let access_token = state.token_auth.create_access_token(api_key.tenant_id, "pro");
+    let access_token = state.token_auth.create_access_token(api_key.tenant_id, "pro")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))))?;
     let refresh_token = state.token_auth.create_refresh_token(api_key.tenant_id);
     Ok(Json(LoginRes {
         access_token,
@@ -1808,7 +1809,7 @@ pub async fn ghost_sleeper_seize(
 ) -> Json<serde_json::Value> {
     match state.sovereign_protocol.seize_sleeper(&addr) {
         Ok(action) => {
-            state.fortress.treasury.deposit(action.amount_seized);
+            let _ = state.fortress.treasury.deposit(action.amount_seized);
             state.fortress.record_action("sovereign", "sleeper_seize", &serde_json::json!({"address": addr, "amount": action.amount_seized}), |msg| state.tee.sign(msg));
             Json(serde_json::json!({"status": "ok", "action": "seize", "address": addr, "amount_seized": action.amount_seized}))
         }
@@ -2022,7 +2023,7 @@ pub async fn fortress_succession_disable(State(state): State<AppState>) -> Json<
 }
 
 pub async fn fortress_treasury_balance(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let bal = state.fortress.treasury.balance();
+    let bal = state.fortress.treasury.balance().unwrap_or(0);
     Json(serde_json::json!({"balance": bal, "asset": "USDC"}))
 }
 

@@ -19,6 +19,7 @@ pub type ProcessOrderFn = Arc<dyn Fn(Order) -> BoxFuture<'static, Result<PlaceOr
 const SOH: u8 = 0x01;
 const HEARTBEAT_SECS: u64 = 30;
 const FIX_DEFAULT_PORT: u16 = 4001;
+const FIX_MAX_MSGS_PER_SEC: u64 = 1000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FIXSessionInfo {
@@ -84,12 +85,11 @@ impl FIXMessage {
         for (k, v) in &self.body {
             parts.push(format!("{}={}", k, v));
         }
-        parts.push(format!("10=000")); // checksum placeholder
-        let mut raw = parts.join(&SOH.to_string());
+        let mut raw = parts.join(&String::from(SOH as char));
         raw.push(SOH as char);
         let sum: u8 = raw.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
-        let len = raw.len();
-        raw.replace_range(len - 7..len - 1, &format!("10={:03}", sum));
+        raw.push_str(&format!("10={:03}", sum));
+        raw.push(SOH as char);
         raw.into_bytes()
     }
 }
@@ -175,6 +175,9 @@ enum FIXCommand {
 struct FIXSessionState {
     info: FIXSessionInfo,
     sender: mpsc::UnboundedSender<FIXCommand>,
+    authenticated: bool,
+    orders_this_second: u64,
+    rate_window_start: std::time::Instant,
 }
 
 pub struct FIXGateway {
@@ -246,6 +249,9 @@ impl FIXGateway {
     }
 
     pub async fn start(&self) {
+        if self.tls_acceptor.is_none() {
+            tracing::warn!("FIX gateway running WITHOUT TLS — connections are plaintext. Set FIX_TLS_CERT and FIX_TLS_KEY for production.");
+        }
         let addr = format!("0.0.0.0:{}", self.port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => l,
@@ -361,6 +367,9 @@ impl FIXGateway {
         self.sessions.insert(session_id.clone(), FIXSessionState {
             info: info.clone(),
             sender: tx.clone(),
+            authenticated: false,
+            orders_this_second: 0,
+            rate_window_start: std::time::Instant::now(),
         });
 
         let gateway = self.clone_inner();
@@ -431,6 +440,9 @@ impl FIXGateway {
         match msg.msg_type.as_str() {
             "A" => {
                 tracing::info!(session = %session_id, sender = %msg.sender_comp_id, "FIX: Logon");
+                if let Some(mut session) = self.sessions.get_mut(session_id) {
+                    session.authenticated = true;
+                }
                 let logon_ack = logon_msg(
                     "THE-BRIDGE",
                     &msg.sender_comp_id,
@@ -456,11 +468,42 @@ impl FIXGateway {
                     let _ = session.sender.send(FIXCommand::Disconnect("remote logout".into()));
                 }
             }
-            "D" => {
-                self.handle_new_order(session_id, &msg).await;
-            }
-            "F" => {
-                self.handle_cancel(session_id, &msg).await;
+            "D" | "F" => {
+                if let Some(session) = self.sessions.get(session_id) {
+                    if !session.authenticated {
+                        self.send_reject(session_id, &msg.body.get("11").cloned().unwrap_or_default(), "Not authenticated — send Logon first").await;
+                        return;
+                    }
+                    {
+                        let mut session = self.sessions.get_mut(session_id).unwrap();
+                        let now = std::time::Instant::now();
+                        if now.duration_since(session.rate_window_start).as_secs() >= 1 {
+                            session.orders_this_second = 0;
+                            session.rate_window_start = now;
+                        }
+                        session.orders_this_second += 1;
+                        if session.orders_this_second > FIX_MAX_MSGS_PER_SEC {
+                            self.send_reject(session_id, &msg.body.get("11").cloned().unwrap_or_default(), "Rate limit exceeded").await;
+                            return;
+                        }
+                    }
+                    if let Some(session) = self.sessions.get(session_id) {
+                        if session.info.seq_num_in > 1 && msg.msg_seq_num != session.info.seq_num_in {
+                            if msg.msg_seq_num < session.info.seq_num_in {
+                                self.send_reject(session_id, &msg.body.get("11").cloned().unwrap_or_default(), "Sequence number too low — possible replay").await;
+                                return;
+                            }
+                        }
+                    }
+                    if let Some(mut session) = self.sessions.get_mut(session_id) {
+                        session.info.seq_num_in = msg.msg_seq_num + 1;
+                    }
+                }
+                if msg.msg_type == "D" {
+                    self.handle_new_order(session_id, &msg).await;
+                } else {
+                    self.handle_cancel(session_id, &msg).await;
+                }
             }
             "2" => {
                 tracing::warn!(session = %session_id, seq = %msg.msg_seq_num, "FIX: ResendRequest — full recovery not yet implemented");
@@ -524,6 +567,8 @@ impl FIXGateway {
             track: crate::types::Track::Compliant,
             style: crate::types::OrderStyle::Standard,
             hidden_remaining: 0.0,
+            client_order_id: None,
+            filled_quantity: 0,
         };
 
         self.total_orders_routed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -534,7 +579,7 @@ impl FIXGateway {
         let result = if let Some(ref pipeline) = self.order_fn {
             pipeline(order.clone()).await
         } else {
-            self.book_manager.place_order(order.clone())
+            self.book_manager.place_order(order.clone()).map_err(|e| e.to_string())
         };
 
         match result {
@@ -597,7 +642,7 @@ impl FIXGateway {
                 }
             }
             Err(e) => {
-                self.send_reject(session_id, &orig_cl_ord_id, &e).await;
+                self.send_reject(session_id, &orig_cl_ord_id, &e.to_string()).await;
             }
         }
     }

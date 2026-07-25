@@ -156,7 +156,7 @@ impl SovereignDarkPool {
     pub async fn start(&mut self) -> Result<(), String> {
         let mut state = self.state.write().await;
         state.running = true;
-        state.started_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        state.started_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
         let mempool = self.mempool.clone();
         let fba_engine = self.fba_engine.clone();
@@ -230,10 +230,10 @@ impl SovereignDarkPool {
             price: (request.order.price * 10000.0) as u64,
             quantity: (request.order.quantity * 10000.0) as u64,
             track: if request.track == Track::Autonomous { 1 } else { 0 },
-            nonce: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+            nonce: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
         };
 
-        let encrypted = self.mempool.encrypt_order(&decrypted);
+        let encrypted = self.mempool.encrypt_order(&decrypted)?;
         self.mempool.submit_encrypted_order(encrypted, 0).await?;
         
         // Also submit to FBA engine
@@ -243,7 +243,7 @@ impl SovereignDarkPool {
         Ok(SubmitOrderResponse {
             order_id: request.order.id.to_string(),
             status: "accepted".to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
         })
     }
 
@@ -254,7 +254,7 @@ impl SovereignDarkPool {
         orderbook: Arc<OrderBookManager>,
         state: Arc<RwLock<DarkPoolState>>,
     ) -> Result<(), String> {
-        let start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
+        let start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u128;
         let mut processed = 0;
 
         let orders = mempool.get_batch_orders(0).await;
@@ -290,11 +290,11 @@ impl SovereignDarkPool {
             }
         }
 
-        let end_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
+        let end_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u128;
         
         let mut state_guard = state.write().await;
         state_guard.total_orders_processed += processed as u64;
-        state_guard.last_mempool_flush = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        state_guard.last_mempool_flush = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         let latency = (end_time - start_time) as f64;
         state_guard.average_mempool_latency_ms = 
@@ -310,14 +310,14 @@ impl SovereignDarkPool {
         _orderbook: Arc<OrderBookManager>,
         state: Arc<RwLock<DarkPoolState>>,
     ) -> Result<(), String> {
-        let start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
+        let start_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u128;
         
         let _ = fba_engine.run_batch_auction().await;
         
-        let end_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u128;
+        let end_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u128;
         
         let mut state_guard = state.write().await;
-        state_guard.last_fba_run = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        state_guard.last_fba_run = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let latency = (end_time - start_time) as f64;
         state_guard.average_fba_latency_ms = 
             (state_guard.average_fba_latency_ms * state_guard.total_trades_executed as f64 + latency) / (state_guard.total_trades_executed + 1) as f64;
@@ -342,7 +342,7 @@ impl SovereignDarkPool {
             filled: 0.0,
             remaining: decrypted.quantity as f64 / 10000.0,
             status: OrderStatus::New,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as i64,
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as i64,
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -432,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dark_pool_basic() {
-        let crypto = Arc::new(ThresholdCrypto::new(2, 3));
+        let crypto = Arc::new(ThresholdCrypto::new(2, 3).unwrap());
         crypto.run_dkg(0);
         crypto.run_dkg(1);
 

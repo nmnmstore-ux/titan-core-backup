@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 //! THE-BRIDGE Flash Loan Engine
 //!
 //! Provides a unified flash loan interface supporting Aave V3 and Uniswap V3 providers
@@ -259,6 +261,7 @@ pub trait FlashLoanProvider: Send + Sync {
 // Aave V3 Provider
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub struct AaveV3Provider {
     name: &'static str,
     pool_address: Address,
@@ -270,6 +273,7 @@ pub struct AaveV3Provider {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct TokenReserveInfo {
     token: Address,
     decimals: u8,
@@ -425,7 +429,6 @@ impl FlashLoanProvider for AaveV3Provider {
 
         let gas_used = self.estimate_gas(token, amount).await.unwrap_or(self.gas_limit);
         let tx_hash: H256 = {
-            let mut hash = [0u8; 32];
             let now = Instant::now();
             let seed = format!(
                 "aave-v3-{:?}-{}-{:?}",
@@ -433,7 +436,7 @@ impl FlashLoanProvider for AaveV3Provider {
                 amount,
                 now.elapsed().as_nanos()
             );
-            let digest = tiny_keccak::Keccak::v256();
+            let _digest = tiny_keccak::Keccak::v256();
             let mut output = [0u8; 32];
             let mut keccak = tiny_keccak::Keccak::v256();
             let mut input = seed.as_bytes().to_vec();
@@ -502,6 +505,7 @@ impl FlashLoanProvider for AaveV3Provider {
 // Uniswap V3 Provider
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 pub struct UniswapV3Provider {
     name: &'static str,
     factory_address: Address,
@@ -512,6 +516,7 @@ pub struct UniswapV3Provider {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct UniswapPoolInfo {
     pool_address: Address,
     token0: Address,
@@ -587,6 +592,7 @@ impl UniswapV3Provider {
         amount * fee_bps as U256 / 1_000_000
     }
 
+    #[allow(dead_code)]
     fn compute_pool_address(&self, token_a: &Address, token_b: &Address, fee: u32) -> Result<Address> {
         let mut sorted = [*token_a, *token_b];
         sorted.sort_unstable();
@@ -753,7 +759,7 @@ pub struct FlashLoanRouter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct RouterMetrics {
+pub struct RouterMetrics {
     total_loans: u64,
     successful_loans: u64,
     failed_loans: u64,

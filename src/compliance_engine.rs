@@ -52,8 +52,6 @@ impl Default for ComplianceConfig {
         }
     }
 }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum KYCStatus {
@@ -424,7 +422,7 @@ impl ComplianceEngine {
             name: "OFAC Specially Designated Nationals".to_string(),
             aliases: vec![],
             list_source: "US Treasury OFAC".to_string(),
-            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             programs: vec!["SDN".to_string(), "FSE".to_string()],
             addresses: vec![],
             identifiers: vec![],
@@ -434,7 +432,7 @@ impl ComplianceEngine {
             name: "EU Consolidated Sanctions List".to_string(),
             aliases: vec![],
             list_source: "EU Council".to_string(),
-            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             programs: vec!["EU_FINANCIAL".to_string()],
             addresses: vec![],
             identifiers: vec![],
@@ -444,7 +442,7 @@ impl ComplianceEngine {
             name: "UN Security Council Consolidated List".to_string(),
             aliases: vec![],
             list_source: "United Nations".to_string(),
-            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            list_date: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             programs: vec!["UN_SANCTIONS".to_string()],
             addresses: vec![],
             identifiers: vec![],
@@ -503,7 +501,7 @@ impl ComplianceEngine {
             return Err(format!("Jurisdiction {} is restricted", jurisdiction));
         }
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let profile = ParticipantComplianceProfile {
             participant_id: participant_id.clone(),
             legal_entity_name,
@@ -566,7 +564,7 @@ impl ComplianceEngine {
         }
         
         profile.kyc_status = KYCStatus::PendingReview;
-        profile.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        profile.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         self.audit_log(participant_id, participant_id, "SUBMIT_KYC_DOCS", "kyc_documents", participant_id, AuditResult::Success, RiskLevel::Low).await;
         Ok(())
@@ -581,7 +579,7 @@ impl ComplianceEngine {
     ) -> Result<(), String> {
         let mut profiles = self.profiles.write().await; let profile = profiles.get_mut(participant_id).ok_or("Participant not found")?;
         
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         if approved {
             profile.kyc_status = KYCStatus::Approved;
@@ -654,7 +652,7 @@ impl ComplianceEngine {
         notional_usd: f64,
     ) -> Result<Vec<ComplianceAlert>, String> {
         let mut alerts = Vec::new();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
         let profile = self.profiles.read().await.get(participant_id).cloned().ok_or("Participant not found")?;
         
@@ -815,7 +813,7 @@ impl ComplianceEngine {
             alert_type,
             severity,
             description,
-            triggered_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            triggered_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             acknowledged: false,
             acknowledged_at: None,
             acknowledged_by: None,
@@ -831,7 +829,7 @@ impl ComplianceEngine {
         let mut alerts = self.alerts.write().await;
         if let Some(alert) = alerts.iter_mut().find(|a| a.alert_id == alert_id) {
             alert.acknowledged = true;
-            alert.acknowledged_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+            alert.acknowledged_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
             alert.acknowledged_by = Some(acknowledged_by.to_string());
             Ok(())
         } else {
@@ -843,7 +841,7 @@ impl ComplianceEngine {
         let mut alerts = self.alerts.write().await;
         if let Some(alert) = alerts.iter_mut().find(|a| a.alert_id == alert_id) {
             alert.resolved = true;
-            alert.resolved_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs());
+            alert.resolved_at = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
             alert.resolution = Some(resolution);
             Ok(())
         } else {
@@ -867,7 +865,7 @@ impl ComplianceEngine {
         profile.compliance_officer_notes.push(ComplianceNote {
             note_id: Uuid::new_v4().to_string(),
             author: officer.to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             note_type: NoteType::FreezeAction,
             content: reason,
             severity: RiskLevel::Critical,
@@ -883,7 +881,7 @@ impl ComplianceEngine {
         profile.compliance_officer_notes.push(ComplianceNote {
             note_id: Uuid::new_v4().to_string(),
             author: officer.to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             note_type: NoteType::UnfreezeAction,
             content: reason,
             severity: RiskLevel::Low,
@@ -894,7 +892,7 @@ impl ComplianceEngine {
 
     async fn daily_volume_reset(&self) {
         let mut profiles = self.profiles.write().await;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         for profile in profiles.values_mut() {
             profile.daily_volume_usd = 0;
             profile.last_volume_reset = now;
@@ -907,7 +905,7 @@ impl ComplianceEngine {
     async fn generate_periodic_reports(&self) {
         if !self.config.regulatory_reporting_enabled { return; }
         
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let period_start = now - 86400;
         
         for jurisdiction in &self.config.reporting_jurisdictions {
@@ -958,7 +956,7 @@ impl ComplianceEngine {
             jurisdiction: jurisdiction.to_string(),
             reporting_period_start: period_start,
             reporting_period_end: period_end,
-            generated_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            generated_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             submitted_at: None,
             status: ReportStatus::Draft,
             transactions,
@@ -980,7 +978,7 @@ impl ComplianceEngine {
         let alerts = self.alerts.read().await;
         let unresolved: Vec<_> = alerts.iter()
             .filter(|a| !a.resolved && !a.acknowledged)
-            .filter(|a| SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - a.triggered_at > 3600)
+            .filter(|a| SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() - a.triggered_at > 3600)
             .collect();
         
         if !unresolved.is_empty() {
@@ -1003,7 +1001,7 @@ impl ComplianceEngine {
     ) {
         let entry = AuditLogEntry {
             log_id: Uuid::new_v4().to_string(),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             actor: actor.to_string(),
             action: action.to_string(),
             resource_type: resource_type.to_string(),
