@@ -6347,6 +6347,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "ethers",
  "futures",
  "hex",
  "parking_lot",
