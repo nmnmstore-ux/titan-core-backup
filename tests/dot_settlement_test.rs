@@ -10,6 +10,10 @@ const DOT_TARGET_MS: u128 = 30_000;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/pool.rs"]
+mod pool;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/dot.rs"]
 mod dot;
 #[path = "../src/tee.rs"]

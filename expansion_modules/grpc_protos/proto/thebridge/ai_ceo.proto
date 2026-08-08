@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package thebridge;
+
+import "thebridge/common.proto";
+
+option optimize_for = SPEED;
+option go_package = "github.com/user/the-bridge/gen/thebridge;thebridge";
+option java_package = "com.thebridge.grpc";
+option java_multiple_files = true;
+option java_outer_classname = "AiCeoProto";
+
+service AiCeoService {
+  rpc AnalyzeLiquidity(LiquidityRequest) returns (AnalysisResponse);
+  rpc DetectSlippage(SlippageRequest) returns (SlippageAlert);
+  rpc GetTradingMode(Empty) returns (TradingModeResponse);
+  rpc StreamMarketData(stream MarketTick) returns (stream Signal);
+}
+
+message LiquidityRequest {
+  RequestMeta meta = 1;
+  string venue = 2;
+  string symbol = 3;
+  Money target_size = 4;
+  uint32 depth_levels = 5;
+  repeated string counterparty_venues = 6;
+}
+
+message AnalysisResponse {
+  RequestMeta meta = 1;
+  string symbol = 2;
+  double liquidity_score = 3;
+  Money available_depth = 4;
+  double spread_bps = 5;
+  double imbalance_ratio = 6;
+  LiquidityVerdict verdict = 7;
+  repeated string reasons = 8;
+  Timestamp evaluated_at = 9;
+  ErrorDetail error = 10;
+}
+
+enum LiquidityVerdict {
+  LIQUIDITY_VERDICT_UNSPECIFIED = 0;
+  LIQUIDITY_VERDICT_ABUNDANT = 1;
+  LIQUIDITY_VERDICT_ADEQUATE = 2;
+  LIQUIDITY_VERDICT_THIN = 3;
+  LIQUIDITY_VERDICT_CRITICAL = 4;
+}
+
+message SlippageRequest {
+  RequestMeta meta = 1;
+  string venue = 2;
+  string symbol = 3;
+  Money order_size = 4;
+  string expected_price = 5;
+  double tolerance_bps = 6;
+  OrderSide side = 7;
+}
+
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  ORDER_SIDE_BUY = 1;
+  ORDER_SIDE_SELL = 2;
+}
+
+message SlippageAlert {
+  RequestMeta meta = 1;
+  string symbol = 2;
+  bool breached = 3;
+  double observed_bps = 4;
+  double tolerance_bps = 5;
+  string projected_price = 6;
+  AlertSeverity severity = 7;
+  string recommended_action = 8;
+  Timestamp detected_at = 9;
+  ErrorDetail error = 10;
+}
+
+enum AlertSeverity {
+  ALERT_SEVERITY_UNSPECIFIED = 0;
+  ALERT_SEVERITY_INFO = 1;
+  ALERT_SEVERITY_WARNING = 2;
+  ALERT_SEVERITY_CRITICAL = 3;
+  ALERT_SEVERITY_HALT = 4;
+}
+
+message TradingModeResponse {
+  TradingMode mode = 1;
+  string rationale = 2;
+  double risk_budget_used = 3;
+  double confidence = 4;
+  Timestamp effective_since = 5;
+  Timestamp next_review_at = 6;
+  ErrorDetail error = 7;
+}
+
+enum TradingMode {
+  TRADING_MODE_UNSPECIFIED = 0;
+  TRADING_MODE_AGGRESSIVE = 1;
+  TRADING_MODE_NORMAL = 2;
+  TRADING_MODE_CONSERVATIVE = 3;
+  TRADING_MODE_DEFENSIVE = 4;
+  TRADING_MODE_HALTED = 5;
+}
+
+message MarketTick {
+  string venue = 1;
+  string symbol = 2;
+  string bid_price = 3;
+  string ask_price = 4;
+  string bid_size = 5;
+  string ask_size = 6;
+  string last_price = 7;
+  string volume_24h = 8;
+  uint64 sequence = 9;
+  Timestamp observed_at = 10;
+}
+
+message Signal {
+  string signal_id = 1;
+  string symbol = 2;
+  SignalKind kind = 3;
+  OrderSide side = 4;
+  double confidence = 5;
+  Money suggested_size = 6;
+  string target_price = 7;
+  string stop_price = 8;
+  uint64 ttl_ms = 9;
+  TradingMode mode = 10;
+  repeated string rationale = 11;
+  Timestamp generated_at = 12;
+}
+
+enum SignalKind {
+  SIGNAL_KIND_UNSPECIFIED = 0;
+  SIGNAL_KIND_ENTRY = 1;
+  SIGNAL_KIND_EXIT = 2;
+  SIGNAL_KIND_HEDGE = 3;
+  SIGNAL_KIND_REBALANCE = 4;
+  SIGNAL_KIND_ARBITRAGE = 5;
+  SIGNAL_KIND_ABORT = 6;
+}

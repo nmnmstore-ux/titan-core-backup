@@ -814,7 +814,7 @@ impl OnboardingEngine {
                 city: "".to_string(),
                 state: None,
                 postal_code: "".to_string(),
-                country: jurisdiction,
+                country: jurisdiction.clone(),
             },
             operational_address: Address {
                 line1: "".to_string(),
@@ -916,7 +916,7 @@ impl OnboardingEngine {
             OnboardingStatus::AdverseMediaCheck,
         ];
         
-        let mut workflow = WorkflowInstance {
+        let workflow = WorkflowInstance {
             workflow_id: format!("WF_{}", client.client_id),
             client_id: client.client_id.clone(),
             current_stage: OnboardingStatus::DocumentCollection,
@@ -933,6 +933,12 @@ impl OnboardingEngine {
     }
 
     async fn add_audit_entry(&self, client: &InstitutionalClient, action: &str, stage: OnboardingStatus, details: &str) {
+        let hash = format!("{:x}", {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            format!("{}{}{:?}{}", client.client_id, action, stage, details).hash(&mut hasher);
+            hasher.finish()
+        });
         let entry = AuditEntry {
             entry_id: Uuid::new_v4().to_string(),
             timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
@@ -942,7 +948,7 @@ impl OnboardingEngine {
             details: HashMap::from([("details".to_string(), details.to_string())]),
             ip_address: None,
             user_agent: None,
-            hash: format!("{:x}", md5::compute(format!("{}{}{}{}", client.client_id, action, stage as u32, details))),
+            hash,
         };
         
         let mut clients = self.clients.write().await;
@@ -961,6 +967,7 @@ impl OnboardingEngine {
         
         client.documents.push(document.clone());
         
+        let doc_type_for_audit = document.document_type.clone();
         let task = DocumentVerificationTask {
             task_id: Uuid::new_v4().to_string(),
             client_id: client_id.to_string(),
@@ -977,7 +984,7 @@ impl OnboardingEngine {
         };
         
         self.document_queue.write().await.push(task);
-        self.add_audit_entry(client, "SUBMIT_DOCUMENT", client.status, &format!("Document submitted: {:?}", document.document_type)).await;
+        self.add_audit_entry(client, "SUBMIT_DOCUMENT", client.status.clone(), &format!("Document submitted: {:?}", doc_type_for_audit)).await;
         
         Ok(())
     }
@@ -1082,13 +1089,18 @@ impl OnboardingEngine {
             wf.current_stage = new_stage.clone();
             wf.stage_started_at = now;
             
+            let should_complete = matches!(new_stage, OnboardingStatus::Activated | OnboardingStatus::Rejected);
+            let wf_clone = wf.clone();
+            drop(wf);
+
             let clients = self.clients.read().await;
             if let Some(client) = clients.get(client_id) {
-                self.add_audit_entry(client, "ADVANCE_STAGE", new_stage.clone(), &format!("{} -> {:?} ({:?})", previous_stage, new_stage, outcome)).await;
+                self.add_audit_entry(client, "ADVANCE_STAGE", new_stage.clone(), &format!("{:?} -> {:?} ({:?})", previous_stage, new_stage, outcome)).await;
             }
+            drop(clients);
             
-            if matches!(new_stage, OnboardingStatus::Activated | OnboardingStatus::Rejected) {
-                workflows.completed_workflows.push(wf.clone());
+            if should_complete {
+                workflows.completed_workflows.push(wf_clone);
                 workflows.active_workflows.remove(&wf_id);
             }
         }
@@ -1312,6 +1324,14 @@ impl OnboardingEngine {
 
     pub async fn get_custodian_account(&self, account_id: &str) -> Option<CustodianAccount> {
         self.custodian_accounts.read().await.get(account_id).cloned()
+    }
+
+    pub async fn link_prime_broker(&self, client_id: &str, prime_broker_id: &str) -> Result<PrimeBrokerAccount, String> {
+        self.setup_prime_broker_account(client_id, prime_broker_id, "Margin".to_string(), 100_000.0).await
+    }
+
+    pub async fn link_custodian(&self, client_id: &str, custodian_id: &str) -> Result<CustodianAccount, String> {
+        self.setup_custodian_account(client_id, custodian_id, "Default".to_string(), "USD".to_string()).await
     }
 
     pub async fn get_metrics(&self) -> OnboardingMetrics {

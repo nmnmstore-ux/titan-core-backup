@@ -1,0 +1,486 @@
+# ============================================================
+# THE-Bridge Global Kubernetes Manifest
+# Multi-region, multi-cloud, auto-scaling, self-healing
+# Deploy to: AWS EKS, GCP GKE, Azure AKS, bare-metal
+# ============================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: the-bridge
+  labels:
+    name: the-bridge
+    environment: production
+---
+# ==================== ConfigMap ====================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: the-bridge-config
+  namespace: the-bridge
+data:
+  RUST_LOG: "the-bridge=info,the-bridge_engine=trace"
+  SERVER_PORT: "3001"
+  DB_HOST: "postgres-headless.the-bridge.svc.cluster.local"
+  REDIS_HOST: "redis-headless.the-bridge.svc.cluster.local"
+  KAFKA_BROKERS: "kafka-broker-0.kafka-headless.the-bridge.svc.cluster.local:9092"
+  MESH_PORT: "9777"
+  METRICS_PORT: "9000"
+---
+# ==================== Matching Engine - StatefulSet with NUMA support ====================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: matching-engine
+  namespace: the-bridge
+spec:
+  serviceName: matching-engine
+  replicas: 3
+  selector:
+    matchLabels:
+      app: matching-engine
+  template:
+    metadata:
+      labels:
+        app: matching-engine
+        tier: core
+      annotations:
+        # Prometheus scrape
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # NUMA-aware pod scheduling - prefer same NUMA node for all containers
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - matching-engine
+                topologyKey: topology.kubernetes.io/zone
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: the-bridge-numa
+                    operator: Exists
+      # Real-time priority
+      priorityClassName: the-bridge-realtime
+      containers:
+        - name: engine
+          image: the-bridge/matching-engine:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3001
+              name: engine
+            - containerPort: 9000
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: the-bridge-config
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: the-bridge-secrets
+                  key: db-password
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "4"
+              hugepages-2Mi: "512Mi"
+            limits:
+              memory: "16Gi"
+              cpu: "8"
+              hugepages-2Mi: "1Gi"
+          # NUMA + hugepage mounts
+          volumeMounts:
+            - name: hugepages
+              mountPath: /dev/hugepages
+          securityContext:
+            privileged: false
+            capabilities:
+              add:
+                - IPC_LOCK    # For mlockall
+                - SYS_NICE    # For RT priorities
+                - SYS_RAWIO   # For NUMA binding
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 3001
+            periodSeconds: 1
+            timeoutSeconds: 1
+      volumes:
+        - name: hugepages
+          emptyDir:
+            medium: HugePages
+---
+# ==================== API Gateway - Horizontal Pod Autoscaler ====================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: the-bridge
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: api-gateway
+  template:
+    metadata:
+      labels:
+        app: api-gateway
+        tier: gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - api-gateway
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: gateway
+          image: the-bridge/api-gateway:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: MATCHING_URL
+              value: "http://matching-engine:3001"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "2"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            periodSeconds: 5
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+  namespace: the-bridge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 5
+  maxReplicas: 100
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Pods
+      pods:
+        metric:
+          name: tps_per_pod
+        target:
+          type: AverageValue
+          averageValue: 200000
+---
+# ==================== AI Agents ====================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-agent
+  namespace: the-bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliance-agent
+  template:
+    metadata:
+      labels:
+        app: compliance-agent
+        tier: ai
+    spec:
+      containers:
+        - name: agent
+          image: the-bridge/compliance-agent:latest
+          ports:
+            - containerPort: 3002
+          resources:
+            requests: { memory: "1Gi", cpu: "1" }
+            limits: { memory: "4Gi", cpu: "2" }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pricing-agent
+  namespace: the-bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pricing-agent
+  template:
+    metadata:
+      labels:
+        app: pricing-agent
+        tier: ai
+    spec:
+      containers:
+        - name: agent
+          image: the-bridge/pricing-agent:latest
+          ports:
+            - containerPort: 3003
+          resources:
+            requests: { memory: "2Gi", cpu: "2" }
+            limits: { memory: "8Gi", cpu: "4" }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-agent
+  namespace: the-bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: risk-agent
+  template:
+    metadata:
+      labels:
+        app: risk-agent
+        tier: ai
+    spec:
+      containers:
+        - name: agent
+          image: the-bridge/risk-agent:latest
+          ports:
+            - containerPort: 3004
+          resources:
+            requests: { memory: "1Gi", cpu: "1" }
+            limits: { memory: "4Gi", cpu: "2" }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: growth-agent
+  namespace: the-bridge
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: growth-agent
+  template:
+    metadata:
+      labels:
+        app: growth-agent
+        tier: ai
+    spec:
+      containers:
+        - name: agent
+          image: the-bridge/growth-agent:latest
+          ports:
+            - containerPort: 3005
+          resources:
+            requests: { memory: "1Gi", cpu: "1" }
+            limits: { memory: "4Gi", cpu: "2" }
+---
+# ==================== Mesh Network DaemonSet (one per node) ====================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mesh-node
+  namespace: the-bridge
+spec:
+  selector:
+    matchLabels:
+      app: mesh-node
+  template:
+    metadata:
+      labels:
+        app: mesh-node
+        tier: network
+    spec:
+      hostNetwork: true
+      containers:
+        - name: mesh
+          image: the-bridge/mesh-node:latest
+          ports:
+            - containerPort: 9777
+              name: mesh
+              hostPort: 9777
+            - containerPort: 9778
+              name: mesh-udp
+              hostPort: 9778
+              protocol: UDP
+          env:
+            - name: MESH_PORT
+              value: "9777"
+            - name: BOOTSTRAP_PEERS
+              value: "/dns/mesh-bootstrap.the-bridge.svc.cluster.local/tcp/9777"
+          resources:
+            requests: { memory: "256Mi", cpu: "200m" }
+            limits: { memory: "1Gi", cpu: "1" }
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+---
+# ==================== Services ====================
+apiVersion: v1
+kind: Service
+metadata:
+  name: matching-engine
+  namespace: the-bridge
+spec:
+  clusterIP: None
+  selector:
+    app: matching-engine
+  ports:
+    - port: 3001
+      name: engine
+    - port: 9000
+      name: metrics
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: the-bridge
+spec:
+  type: ClusterIP
+  selector:
+    app: api-gateway
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway-external
+  namespace: the-bridge
+spec:
+  type: LoadBalancer
+  selector:
+    app: api-gateway
+  ports:
+    - port: 443
+      targetPort: 8080
+---
+# ==================== Priority Class ====================
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: the-bridge-realtime
+value: 1000000
+globalDefault: false
+description: "Real-time priority for matching engine pods"
+---
+# ==================== Pod Disruption Budget ====================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: matching-engine-pdb
+  namespace: the-bridge
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: matching-engine
+---
+# ==================== Network Policy (zero-trust) ====================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: the-bridge-default-deny
+  namespace: the-bridge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: the-bridge-allow-internal
+  namespace: the-bridge
+spec:
+  podSelector: {}
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: the-bridge
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: the-bridge
+    - to:
+        - podSelector: {}
+---
+# ==================== Prometheus ServiceMonitor ====================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: the-bridge-monitor
+  namespace: the-bridge
+spec:
+  selector:
+    matchLabels:
+      app: matching-engine
+  endpoints:
+    - port: metrics
+      interval: 1s
+      path: /metrics
+---
+# ==================== Multi-Region Failover ====================
+# Deploy this manifest to each region:
+#   region-1: us-east-1 (primary)
+#   region-2: eu-west-1 (failover)
+#   region-3: me-south-1 (middle east primary)
+#
+# Global DNS: api.the-bridge.io → Route53 Latency-based routing
+# Fallback: mesh.the-bridge.io → libp2p peer discovery

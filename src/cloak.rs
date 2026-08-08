@@ -187,7 +187,7 @@ impl NodeCloakingProtocol {
     }
 
     pub fn pack_snapshot(snapshot: &EngineSnapshot) -> Result<Vec<u8>, String> {
-        bincode::serialize(snapshot).map_err(|e| format!("snapshot serialization failed: {}", e))
+        crate::types::bincode_serialize(snapshot)
     }
 
     pub fn migrate_to_backup(packed: &[u8], backup_addr: &str) -> Result<Duration, String> {

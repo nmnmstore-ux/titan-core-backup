@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComplianceConfig {
@@ -307,6 +307,7 @@ pub enum AuditResult {
     Blocked,
 }
 
+#[derive(Clone)]
 pub struct ComplianceEngine {
     config: ComplianceConfig,
     profiles: Arc<RwLock<HashMap<String, ParticipantComplianceProfile>>>,
@@ -532,7 +533,7 @@ impl ComplianceEngine {
 
         self.run_initial_screening(&profile).await;
         self.profiles.write().await.insert(participant_id.clone(), profile.clone());
-        self.audit_log(participant_id, participant_id, "REGISTER_PARTICIPANT", "compliance_profile", &participant_id, AuditResult::Success, RiskLevel::Low).await;
+        self.audit_log(&participant_id, "REGISTER_PARTICIPANT", "compliance_profile", &participant_id, AuditResult::Success, RiskLevel::Low).await;
         
         info!("Registered participant {} for compliance", participant_id);
         Ok(profile)
@@ -566,7 +567,7 @@ impl ComplianceEngine {
         profile.kyc_status = KYCStatus::PendingReview;
         profile.updated_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         
-        self.audit_log(participant_id, participant_id, "SUBMIT_KYC_DOCS", "kyc_documents", participant_id, AuditResult::Success, RiskLevel::Low).await;
+        self.audit_log(participant_id, "SUBMIT_KYC_DOCS", "kyc_documents", participant_id, AuditResult::Success, RiskLevel::Low).await;
         Ok(())
     }
 
@@ -585,7 +586,7 @@ impl ComplianceEngine {
             profile.kyc_status = KYCStatus::Approved;
             profile.kyc_completed_at = Some(now);
             profile.kyc_expires_at = Some(now + 365 * 24 * 3600);
-            profile.risk_level = self.calculate_risk_level(&profile).await;
+            profile.risk_level = self.calculate_risk_level(profile).await;
             
             for doc in &mut profile.documents {
                 doc.verified = true;
@@ -606,7 +607,7 @@ impl ComplianceEngine {
         });
         
         profile.updated_at = now;
-        self.audit_log(participant_id, participant_id, "REVIEW_KYC", "kyc_status", participant_id, 
+        self.audit_log(participant_id, "REVIEW_KYC", "kyc_status", participant_id, 
             if approved { AuditResult::Success } else { AuditResult::Failure }, 
             if approved { RiskLevel::Low } else { RiskLevel::High }
         ).await;
@@ -614,7 +615,7 @@ impl ComplianceEngine {
         Ok(())
     }
 
-    async fn calculate_risk_level(&self, profile: &ParticipantComplianceProfile) -> RiskLevel {
+    async fn calculate_risk_level(&self, profile: &mut ParticipantComplianceProfile) -> RiskLevel {
         let mut score = 0.0;
         
         if profile.sanctions_match { score += 1.0; }
@@ -645,10 +646,10 @@ impl ComplianceEngine {
         &self,
         participant_id: &str,
         counterparty_id: &str,
-        symbol: &str,
-        side: &str,
-        quantity: f64,
-        price: f64,
+        _symbol: &str,
+        _side: &str,
+        _quantity: f64,
+        _price: f64,
         notional_usd: f64,
     ) -> Result<Vec<ComplianceAlert>, String> {
         let mut alerts = Vec::new();
@@ -734,7 +735,7 @@ impl ComplianceEngine {
         window.transaction_count += 1;
         window.total_volume_usd += volume_usd;
         
-        let cp_key = format!("{}_{}", participant_id, counterparty_id);
+        let _cp_key = format!("{}_{}", participant_id, counterparty_id);
         *monitor.counterparty_exposure.entry(participant_id.to_string()).or_default()
             .entry(counterparty_id.to_string()).or_insert(0.0) += volume_usd as f64;
         
@@ -837,7 +838,7 @@ impl ComplianceEngine {
         }
     }
 
-    pub async fn resolve_alert(&self, alert_id: &str, resolved_by: &str, resolution: String) -> Result<(), String> {
+    pub async fn resolve_alert(&self, alert_id: &str, _resolved_by: &str, resolution: String) -> Result<(), String> {
         let mut alerts = self.alerts.write().await;
         if let Some(alert) = alerts.iter_mut().find(|a| a.alert_id == alert_id) {
             alert.resolved = true;
@@ -870,7 +871,7 @@ impl ComplianceEngine {
             content: reason,
             severity: RiskLevel::Critical,
         });
-        self.audit_log(participant_id, participant_id, "FREEZE_PARTICIPANT", "compliance_profile", participant_id, AuditResult::Success, RiskLevel::Critical).await;
+        self.audit_log(participant_id, "FREEZE_PARTICIPANT", "compliance_profile", participant_id, AuditResult::Success, RiskLevel::Critical).await;
         Ok(())
     }
 
@@ -886,7 +887,7 @@ impl ComplianceEngine {
             content: reason,
             severity: RiskLevel::Low,
         });
-        self.audit_log(participant_id, participant_id, "UNFREEZE_PARTICIPANT", "compliance_profile", participant_id, AuditResult::Success, RiskLevel::Low).await;
+        self.audit_log(participant_id, "UNFREEZE_PARTICIPANT", "compliance_profile", participant_id, AuditResult::Success, RiskLevel::Low).await;
         Ok(())
     }
 
@@ -921,12 +922,12 @@ impl ComplianceEngine {
         period_end: u64,
     ) -> RegulatoryReport {
         let profiles = self.profiles.read().await;
-        let alerts = self.alerts.read().await;
+        let _alerts = self.alerts.read().await;
         
-        let mut transactions = Vec::new();
+        let transactions = Vec::new();
         let mut total_volume = 0u64;
         let mut unique_participants = std::collections::HashSet::new();
-        let mut ctr_count = 0;
+        let ctr_count = 0;
         let mut sar_count = 0;
         let mut large_transactions = 0;
         

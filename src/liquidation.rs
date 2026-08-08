@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use the_bridge_flash_loan::{FlashLoanRouter, FlashLoanCallback};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
@@ -110,6 +111,7 @@ impl Default for LiquidationConfig {
 
 pub struct LiquidationEngine {
     config: LiquidationConfig,
+    router: Arc<FlashLoanRouter>,
     positions: Arc<RwLock<Vec<Position>>>,
     opportunities: Arc<RwLock<Vec<LiquidationOpportunity>>>,
     executed: Arc<RwLock<Vec<LiquidationResult>>>,
@@ -131,9 +133,10 @@ pub struct LiquidationStats {
 }
 
 impl LiquidationEngine {
-    pub fn new(config: LiquidationConfig) -> Self {
+    pub fn new(config: LiquidationConfig, router: Arc<FlashLoanRouter>) -> Self {
         Self {
             config,
+            router,
             positions: Arc::new(RwLock::new(Vec::new())),
             opportunities: Arc::new(RwLock::new(Vec::new())),
             executed: Arc::new(RwLock::new(Vec::new())),
@@ -170,6 +173,9 @@ impl LiquidationEngine {
         *self.positions.write().await = positions.clone();
         let opportunities = self.analyze_positions(&positions);
         *self.opportunities.write().await = opportunities.clone();
+        let mut stats = self.stats.write().await;
+        stats.total_scans += 1;
+        stats.positions_monitored = self.positions.read().await.len();
         Ok(opportunities)
     }
 
@@ -193,6 +199,7 @@ impl LiquidationEngine {
     fn clone_inner(&self) -> Self {
         Self {
             config: self.config.clone(),
+            router: self.router.clone(),
             positions: self.positions.clone(),
             opportunities: self.opportunities.clone(),
             executed: self.executed.clone(),
@@ -277,13 +284,20 @@ impl LiquidationEngine {
 
     fn estimate_gas(&self, _calldata: &[u8]) -> Result<u64, LiqError> { Ok(300_000) }
 
-    async fn execute_with_flash_loan(&self, opp: &LiquidationOpportunity, _calldata: &[u8], _gas: u64) -> Result<LiquidationResult, LiqError> {
+    async fn execute_with_flash_loan(&self, opp: &LiquidationOpportunity, calldata: &[u8], _gas: u64) -> Result<LiquidationResult, LiqError> {
+        let token = opp.debt_asset;
+        let amount = opp.debt_to_cover;
+        let callback = FlashLoanCallback::new(calldata.to_vec(), 300_000)
+            .with_assets(vec![opp.collateral_asset], vec![opp.collateral_to_receive]);
+        let result = self.router.execute_flash_loan(token, amount, callback).await
+            .map_err(|e| LiqError::ExecutionFailed(e.to_string()))?;
+        let tx_hash = result.tx_hash.map(|h| hex::encode(h));
         Ok(LiquidationResult {
             opportunity_id: hex_simple(&opp.user[..8]),
             user: opp.user, debt_covered: opp.debt_to_cover,
             collateral_received: opp.collateral_to_receive,
-            profit_usd: opp.estimated_profit_usd, tx_hash: None,
-            success: false, error: Some("Flash loan execution not yet implemented".into()),
+            profit_usd: opp.estimated_profit_usd, tx_hash,
+            success: result.success, error: result.error,
             timestamp: now_ts(),
         })
     }
@@ -303,27 +317,29 @@ fn hex_simple(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use the_bridge_flash_loan::FlashLoanRouter;
 
     fn test_config() -> LiquidationConfig { LiquidationConfig { min_profit_usd: 10.0, scan_interval_secs: 1, ..Default::default() } }
+    fn test_router() -> Arc<FlashLoanRouter> { Arc::new(FlashLoanRouter::new(vec![])) }
 
     #[tokio::test]
-    async fn test_liquidation_engine_creation() { let e = LiquidationEngine::new(test_config()); assert!(!e.is_running().await); }
+    async fn test_liquidation_engine_creation() { let e = LiquidationEngine::new(test_config(), test_router()); assert!(!e.is_running().await); }
 
     #[tokio::test]
-    async fn test_scan_positions() { let e = LiquidationEngine::new(test_config()); let o = e.scan_now().await.unwrap(); assert!(!o.is_empty()); assert!(o[0].profitable); }
+    async fn test_scan_positions() { let e = LiquidationEngine::new(test_config(), test_router()); let o = e.scan_now().await.unwrap(); assert!(!o.is_empty()); assert!(o[0].profitable); }
 
     #[tokio::test]
-    async fn test_liquidation_analyze() { let e = LiquidationEngine::new(test_config()); let p = e.fetch_positions().await.unwrap(); let o = e.analyze_positions(&p); assert!(!o.is_empty()); assert!(o[0].priority > 0.0); }
+    async fn test_liquidation_analyze() { let e = LiquidationEngine::new(test_config(), test_router()); let p = e.fetch_positions().await.unwrap(); let o = e.analyze_positions(&p); assert!(!o.is_empty()); assert!(o[0].priority > 0.0); }
 
     #[test]
     fn test_liquidation_config_default() { let c = LiquidationConfig::default(); assert!(c.min_profit_usd > 0.0); assert!(c.scan_interval_secs > 0); }
 
     #[tokio::test]
-    async fn test_liquidation_call_preparation() { let e = LiquidationEngine::new(test_config()); let o = e.scan_now().await.unwrap(); let c = e.prepare_liquidation_call(&o[0]); assert!(c.is_ok()); assert!(!c.unwrap().is_empty()); }
+    async fn test_liquidation_call_preparation() { let e = LiquidationEngine::new(test_config(), test_router()); let o = e.scan_now().await.unwrap(); let c = e.prepare_liquidation_call(&o[0]); assert!(c.is_ok()); assert!(!c.unwrap().is_empty()); }
 
     #[tokio::test]
-    async fn test_start_stop() { let e = LiquidationEngine::new(test_config()); e.start().await.unwrap(); assert!(e.is_running().await); e.stop().await; assert!(!e.is_running().await); }
+    async fn test_start_stop() { let e = LiquidationEngine::new(test_config(), test_router()); e.start().await.unwrap(); assert!(e.is_running().await); e.stop().await; assert!(!e.is_running().await); }
 
     #[tokio::test]
-    async fn test_stats_tracking() { let e = LiquidationEngine::new(test_config()); e.scan_now().await.unwrap(); let s = e.get_stats().await; assert!(s.total_scans > 0 || s.positions_monitored > 0); }
+    async fn test_stats_tracking() { let e = LiquidationEngine::new(test_config(), test_router()); e.scan_now().await.unwrap(); let s = e.get_stats().await; assert!(s.total_scans > 0 || s.positions_monitored > 0); }
 }

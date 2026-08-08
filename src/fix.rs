@@ -545,6 +545,7 @@ impl FIXGateway {
 
         let order = Order {
             id: Uuid::new_v4(),
+            id_tag: 0,
             user_id: Uuid::nil(),
             pair: CompactString::from(symbol.to_uppercase()),
             order_type,

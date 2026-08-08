@@ -153,7 +153,7 @@ impl HardwareEnclave for TEEEnclave {
             return Err(TEEError::SealBroken);
         }
         let sk = self.signing_key.read();
-        Ok(bincode::serialize(&sk.to_bytes().to_vec())
+        Ok(crate::types::bincode_serialize_direct(&sk.to_bytes().to_vec())
             .map_err(|e| TEEError::SealExportFailed(e.to_string()))?)
     }
 }

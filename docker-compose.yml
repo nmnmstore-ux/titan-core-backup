@@ -79,6 +79,15 @@ services:
     networks:
       - the-bridge-net
 
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: the-bridge-node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    networks:
+      - the-bridge-net
+
   grafana:
     image: grafana/grafana:latest
     container_name: the-bridge-grafana
@@ -90,6 +99,8 @@ services:
       GF_INSTALL_PLUGINS: ""
     volumes:
       - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus

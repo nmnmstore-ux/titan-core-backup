@@ -1,7 +1,6 @@
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::ghost_integration::{BrokerEndpoint, BrokerEvasionStrategy, OrderFragment, FragmentStatus, TimingObfuscation};
+use crate::ghost_integration::BrokerEndpoint;
 use crate::types::{OrderSide, Track};
 use sha2::{Digest, Sha256};
 
@@ -167,7 +166,7 @@ impl SmartOrderRouter {
             });
         } else {
             let total_weight: f64 = scored.iter().map(|(s, _)| s).sum();
-            let mut rng = rand::thread_rng();
+            let _rng = rand::thread_rng();
             for (i, (score, broker)) in scored.iter().enumerate() {
                 if i == scored.len() - 1 {
                     let cost = remaining * request.price * 0.001;

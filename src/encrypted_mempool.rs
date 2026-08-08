@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +260,7 @@ impl EncryptedMempool {
 pub fn decrypted_to_order(decrypted: &DecryptedOrder) -> Order {
     Order {
         id: uuid::Uuid::parse_str(&decrypted.order_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+        id_tag: 0,
         user_id: uuid::Uuid::parse_str(&decrypted.user_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
         pair: decrypted.pair.clone().into(),
         order_type: OrderType::Limit,

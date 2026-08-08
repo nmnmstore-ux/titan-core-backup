@@ -1474,6 +1474,8 @@ mod tests {
 
 // Flash Loan Arbitrage Engine (MVP)
 pub mod flash_loan_arb;
+pub mod flash_loan_arb_v2;
+pub mod rpc_fallback;
 
 // Re-exports for integration tests
 pub use crate::tick_math::{get_sqrt_ratio_at_tick, get_tick_at_sqrt_ratio};

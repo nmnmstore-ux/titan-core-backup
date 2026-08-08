@@ -11,6 +11,8 @@ use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/io.rs"]
 mod io;
 #[path = "../src/orderbook.rs"]
@@ -169,6 +171,7 @@ fn test_stop_loss_validation() {
     // Verify TWAP stores style
     let twap = Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: user,
         pair: CompactString::from(pair),
         order_type: OrderType::Limit,
@@ -268,6 +271,7 @@ fn test_twap_order_lifecycle() {
     let user = Uuid::new_v4();
     let twap = Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: user,
         pair: CompactString::from(pair),
         order_type: OrderType::Limit,
@@ -390,6 +394,7 @@ fn test_orderbook_manager_advanced_orders() {
     // Test TWAP lifecycle
     let twap = Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: user,
         pair: CompactString::from(pair),
         order_type: OrderType::Limit,

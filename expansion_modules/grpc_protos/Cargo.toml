@@ -1,0 +1,26 @@
+[package]
+name = "the-bridge-grpc-protos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "gRPC protobuf definitions for THE-BRIDGE expansion modules"
+
+[lib]
+name = "grpc_protos"
+path = "src/lib.rs"
+
+[features]
+default = ["server", "client"]
+server = ["tonic"]
+client = ["tonic"]
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true, features = ["transport"], optional = true }
+serde = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"

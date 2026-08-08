@@ -3,6 +3,8 @@ use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/matching.rs"]
 mod matching;
 #[path = "../src/counterparty.rs"]
@@ -19,6 +21,7 @@ mod pipeline;
 fn make_order(pair: &str, price: f64, qty: f64, track: types::Track) -> types::Order {
     types::Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: Uuid::new_v4(),
         pair: CompactString::from(pair),
         order_type: types::OrderType::Limit,

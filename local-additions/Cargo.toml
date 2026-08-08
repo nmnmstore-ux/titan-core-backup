@@ -15,7 +15,7 @@ default-members = ["."]
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/user/the-bridge"
 
 [workspace.dependencies]
@@ -100,7 +100,7 @@ base64 = "0.22"
 name = "the-bridge-matching-engine"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/user/the-bridge"
 
 [profile.release]

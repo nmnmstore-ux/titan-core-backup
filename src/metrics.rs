@@ -68,13 +68,21 @@ impl MetricsCollector {
         self.orders_processed.swap(0, Ordering::Relaxed)
     }
 
+    pub fn latency_seconds_histogram(&self) -> Vec<(f64, u64)> {
+        LATENCY_THRESHOLDS
+            .iter()
+            .enumerate()
+            .map(|(i, &le)| (le as f64 / 1_000_000.0, self.latency_buckets[i].load(Ordering::Relaxed)))
+            .collect()
+    }
+
     pub fn prometheus_text(&self) -> String {
-        let orders = self.orders_processed.swap(0, Ordering::Relaxed);
-        let trades = self.trades_executed.swap(0, Ordering::Relaxed);
-        let dot = self.dot_settlements.swap(0, Ordering::Relaxed);
-        let fix = self.fix_messages.swap(0, Ordering::Relaxed);
-        let volume = self.total_volume.swap(0, Ordering::Relaxed) as f64 / 100.0;
-        let errors = self.errors.swap(0, Ordering::Relaxed);
+        let orders = self.orders_processed.load(Ordering::Relaxed);
+        let trades = self.trades_executed.load(Ordering::Relaxed);
+        let dot = self.dot_settlements.load(Ordering::Relaxed);
+        let fix = self.fix_messages.load(Ordering::Relaxed);
+        let volume = self.total_volume.load(Ordering::Relaxed) as f64 / 100.0;
+        let errors = self.errors.load(Ordering::Relaxed);
         let health = self.health.load(Ordering::Relaxed) as u64;
         let uptime = self.start_time.elapsed().as_secs();
 
@@ -109,7 +117,7 @@ impl MetricsCollector {
         out.push_str("# HELP the_bridge_latency Latency histogram buckets (µs)\n");
         out.push_str("# TYPE the_bridge_latency histogram\n");
         for (i, &le) in LATENCY_THRESHOLDS.iter().enumerate() {
-            let count = self.latency_buckets[i].swap(0, Ordering::Relaxed);
+            let count = self.latency_buckets[i].load(Ordering::Relaxed);
             out.push_str(&format!("the_bridge_latency_bucket{{le=\"{}\"}} {}\n", le, count));
         }
         out.push_str(&format!("the_bridge_latency_count {}\n", orders));
@@ -235,5 +243,17 @@ mod tests {
         m.inc_trades_by(300);
         let snap = m.snapshot();
         assert_eq!(snap["trades"], 800);
+    }
+
+    #[test]
+    fn latency_seconds_histogram_cumulative() {
+        let m = MetricsCollector::new();
+        m.record_latency(3);
+        m.record_latency(100);
+        let hist = m.latency_seconds_histogram();
+        assert_eq!(hist.len(), LATENCY_THRESHOLDS.len());
+        assert_eq!(hist[0].1 + hist[1].1 + hist[5].1, 2);
+        let again = m.latency_seconds_histogram();
+        assert_eq!(hist, again, "histogram must not be drained by reads");
     }
 }

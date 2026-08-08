@@ -52,7 +52,7 @@ impl HostNode {
 }
 
 pub struct CloudOrchestrator {
-    pub tenants: TenantManager,
+    pub tenants: Arc<TenantManager>,
     pub hosts: DashMap<String, HostNode>,
     pub scaling_config: Mutex<ScalingConfig>,
     pub total_engines: AtomicU64,
@@ -64,7 +64,7 @@ pub struct CloudOrchestrator {
 impl CloudOrchestrator {
     pub fn new(config: ScalingConfig) -> Self {
         let orch = Self {
-            tenants: TenantManager::new(),
+            tenants: Arc::new(TenantManager::new()),
             hosts: DashMap::new(),
             scaling_config: Mutex::new(config),
             total_engines: AtomicU64::new(0),

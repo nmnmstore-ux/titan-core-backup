@@ -58,8 +58,8 @@
 
 #![allow(dead_code)]
 use crate::types::*;
-use aes_gcm::{Aes256Gcm, Key, Nonce};
 use aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Key, Nonce};
 use blake2::{Blake2b512, Digest};
 use crc32fast::Hasher;
 use ed25519_dalek::Signer;
@@ -70,7 +70,6 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -111,6 +110,10 @@ pub enum WALError {
     IoUring(String),
     #[error("WAL chain verification failed at seq {seq}")]
     ChainVerification { seq: u64 },
+    #[error("WAL channel error: {0}")]
+    Channel(String),
+    #[error("WAL rotation error: {0}")]
+    Rotation(String),
 }
 
 impl From<WALError> for String {
@@ -122,10 +125,22 @@ use tracing::{info, instrument};
 
 /// WAL file magic number for format identification (unused currently, reserved).
 const WAL_MAGIC: u32 = 0x53424757;
+/// WAL magic for v2 binary format.
+const WAL_MAGIC_V2: u32 = 0x57414C32;
 /// Number of entries between flush + replication cycles.
 const MAX_BATCH_SIZE: usize = 64;
 /// Maximum allowed replication lag in milliseconds before marking unhealthy.
 const MAX_REPLICA_LAG: u64 = 10_000;
+/// Size of binary header: magic(4) + crc32(4) + length(4) + ts(8) + prev_hash(32) + seq(8)
+const NEW_WAL_HEADER_SIZE: usize = 60;
+/// Size of old hex header: crc32(8) + length(8) + ts(16) + prev_hash(64) + seq(16)
+const OLD_WAL_HEADER_SIZE: usize = 112;
+/// Ed25519 signature size in bytes.
+const SIG_SIZE: usize = 64;
+/// Maximum WAL file size before rotation (64 MB).
+const MAX_WAL_FILE_SIZE: u64 = 64 * 1024 * 1024;
+/// Maximum number of rotated WAL files to keep.
+const MAX_WAL_FILES: usize = 10;
 
 // Aligned buffer for O_DIRECT writes on Linux (512B sector alignment)
 // `Layout::from_size_align` requires size to be a multiple of align, so we round up.
@@ -159,11 +174,11 @@ fn aligned_buffer(size: usize) -> Vec<u8> {
 // Each write + fsync = 1 submission + 1 completion (vs 2 syscalls with write+fsync).
 #[cfg(target_os = "linux")]
 mod iouring_backend {
-    use io_uring::{IoUring, opcode, types};
+    use super::WALError;
+    use io_uring::{opcode, types, IoUring};
     use std::os::unix::io::{AsRawFd, RawFd};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
-    use super::WALError;
 
     pub struct IoUringHandle {
         ring: Mutex<IoUring>,
@@ -178,13 +193,23 @@ mod iouring_backend {
             match IoUring::new(entries) {
                 Ok(ring) => {
                     tracing::info!(fd, sq_entries = entries, "io_uring WAL backend initialized");
-                    Some(Self { ring: Mutex::new(ring), fd, sq_entries: entries, available: AtomicBool::new(true) })
+                    Some(Self {
+                        ring: Mutex::new(ring),
+                        fd,
+                        sq_entries: entries,
+                        available: AtomicBool::new(true),
+                    })
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "io_uring not available — falling back to std fs");
                     // Try a minimal 1-entry ring as a dummy (never used since available=false)
                     match IoUring::new(1) {
-                        Ok(ring) => Some(Self { ring: Mutex::new(ring), fd, sq_entries: 1, available: AtomicBool::new(false) }),
+                        Ok(ring) => Some(Self {
+                            ring: Mutex::new(ring),
+                            fd,
+                            sq_entries: 1,
+                            available: AtomicBool::new(false),
+                        }),
                         Err(e2) => {
                             tracing::error!(error = %e2, "io_uring completely unavailable — using sync fallback");
                             None
@@ -201,22 +226,22 @@ mod iouring_backend {
         /// Submit a write via io_uring and wait for completion.
         /// Uses aligned buffer internally for optimal DMA.
         pub fn write_at(&self, buf: &[u8], offset: u64) -> Result<u32, WALError> {
-            let write_e = opcode::Write::new(
-                types::Fd(self.fd),
-                buf.as_ptr(),
-                buf.len() as u32,
-            )
+            let write_e = opcode::Write::new(types::Fd(self.fd), buf.as_ptr(), buf.len() as u32)
                 .offset(offset)
                 .build();
 
-            let mut ring = self.ring.lock().map_err(|e| WALError::IoUring(format!("ring lock: {}", e)))?;
+            let mut ring = self
+                .ring
+                .lock()
+                .map_err(|e| WALError::IoUring(format!("ring lock: {}", e)))?;
             unsafe {
                 let mut sq = ring.submission();
                 sq.push(&write_e)
                     .map_err(|e| WALError::IoUring(format!("io_uring sq push: {:?}", e)))?;
             }
 
-            let cqes = ring.submit_and_wait(1)
+            let cqes = ring
+                .submit_and_wait(1)
                 .map_err(|e| WALError::IoUring(format!("io_uring submit: {}", e)))?;
 
             if cqes == 0 {
@@ -238,17 +263,20 @@ mod iouring_backend {
 
         /// Submit an fsync via io_uring and wait for completion.
         pub fn sync_all(&self) -> Result<(), WALError> {
-            let sync_e = opcode::Fsync::new(types::Fd(self.fd))
-                .build();
+            let sync_e = opcode::Fsync::new(types::Fd(self.fd)).build();
 
-            let mut ring = self.ring.lock().map_err(|e| WALError::IoUring(format!("ring lock: {}", e)))?;
+            let mut ring = self
+                .ring
+                .lock()
+                .map_err(|e| WALError::IoUring(format!("ring lock: {}", e)))?;
             unsafe {
                 let mut sq = ring.submission();
                 sq.push(&sync_e)
                     .map_err(|e| WALError::IoUring(format!("io_uring sq push: {:?}", e)))?;
             }
 
-            let cqes = ring.submit_and_wait(1)
+            let cqes = ring
+                .submit_and_wait(1)
                 .map_err(|e| WALError::IoUring(format!("io_uring submit: {}", e)))?;
 
             if cqes == 0 {
@@ -287,14 +315,18 @@ impl EncryptionManager {
     fn new(key_bytes: [u8; 32]) -> Self {
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(key);
-        Self { key: key_bytes, cipher }
+        Self {
+            key: key_bytes,
+            cipher,
+        }
     }
 
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, WALError> {
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce_obj = Nonce::from_slice(&nonce_bytes);
-        let ciphertext = self.cipher
+        let ciphertext = self
+            .cipher
             .encrypt(nonce_obj, plaintext)
             .map_err(|e| WALError::Encryption(format!("AES-256-GCM encrypt error: {}", e)))?;
         let mut result = Vec::with_capacity(12 + ciphertext.len());
@@ -349,6 +381,87 @@ pub struct WALEntry {
     pub seq: u64,
 }
 
+/// Commands sent from the main thread to the background WAL writer thread.
+enum WriterCommand {
+    Write(Vec<u8>),
+    Flush(std::sync::mpsc::Sender<()>),
+    Shutdown,
+}
+
+fn spawn_writer_thread(
+    mut file: std::fs::File,
+    file_path: PathBuf,
+    rx: std::sync::mpsc::Receiver<WriterCommand>,
+    last_sync: std::sync::Arc<AtomicU64>,
+) -> std::thread::JoinHandle<()> {
+        std::thread::Builder::new()
+        .name("wal-writer".into())
+        .spawn(move || {
+            let mut wal_size: u64 = 0;
+
+            #[cfg(target_os = "linux")]
+            let _iouring = IoUringHandle::new(&file, 256);
+
+            loop {
+                match rx.recv() {
+                    Ok(WriterCommand::Write(data)) => {
+                        let entry_size = data.len() as u64;
+                        if wal_size + entry_size > MAX_WAL_FILE_SIZE {
+                            let _ = file.sync_all();
+                            let rotated = rotate_wal_file(&file_path);
+                            match rotated {
+                                Ok(new_file) => {
+                                    file = new_file;
+                                    wal_size = 0;
+                                    #[cfg(target_os = "linux")]
+                                    let _iouring = IoUringHandle::new(&file, 256);
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                        if let Ok(_) = file.write_all(&data) {
+                            wal_size += entry_size;
+                        }
+                    }
+                    Ok(WriterCommand::Flush(ack)) => {
+                        let _ = file.sync_all();
+                        last_sync.store(
+                            chrono::Utc::now().timestamp_millis() as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        let _ = ack.send(());
+                    }
+                    Ok(WriterCommand::Shutdown) => {
+                        let _ = file.sync_all();
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .expect("spawn WAL writer thread")
+}
+
+fn rotate_wal_file(file_path: &Path) -> Result<std::fs::File, WALError> {
+    for i in (1..MAX_WAL_FILES).rev() {
+        let old_path = file_path.with_extension(format!("wal.{}", i));
+        let new_path = file_path.with_extension(format!("wal.{}", i + 1));
+        if old_path.exists() {
+            let _ = std::fs::rename(&old_path, &new_path);
+        }
+    }
+    let first_backup = file_path.with_extension("wal.1");
+    let _ = std::fs::rename(file_path, &first_backup);
+    let oldest = file_path.with_extension(format!("wal.{}", MAX_WAL_FILES));
+    let _ = std::fs::remove_file(&oldest);
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(file_path)
+        .map_err(|e| WALError::FileOpen(format!("rotate: {}", e)))
+}
+
 /// The Write-Ahead Log instance — crash-safe persistence layer.
 ///
 /// # File Layout
@@ -366,19 +479,17 @@ pub struct WALEntry {
 pub struct WriteAheadLog {
     node_id: String,
     file_path: PathBuf,
-    file: Mutex<std::fs::File>,
-    current_offset: AtomicU64,
-    last_sync: AtomicU64,
+    last_sync: std::sync::Arc<AtomicU64>,
     replicas: Vec<String>,
     pending: Mutex<VecDeque<(u64, WALEntry)>>,
     next_seq: AtomicU64,
     last_hash: Mutex<[u8; 32]>,
     encryption: Option<EncryptionManager>,
-    signing_key: [u8; 32],
+    signing_key: ed25519_dalek::SigningKey,
     verifying_key: [u8; 32],
     replica_runtime: tokio::runtime::Runtime,
-    #[cfg(target_os = "linux")]
-    iouring: Option<IoUringHandle>,
+    writer_tx: std::sync::mpsc::Sender<WriterCommand>,
+    writer_handle: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl WriteAheadLog {
@@ -388,43 +499,29 @@ impl WriteAheadLog {
             .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
             .collect();
         if safe_node_id.is_empty() {
-            return Err(WALError::DirCreate("node_id must contain alphanumeric, dash, or underscore characters".into()));
+            return Err(WALError::DirCreate(
+                "node_id must contain alphanumeric, dash, or underscore characters".into(),
+            ));
         }
         std::fs::create_dir_all(wal_dir).map_err(|e| WALError::DirCreate(e.to_string()))?;
         let file_path = wal_dir.join(format!("{}.wal", safe_node_id));
 
-        #[cfg(target_os = "linux")]
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .read(true)
-                .mode(0o600)
-                .open(&file_path)
-                .map_err(|e| WALError::FileOpen(e.to_string()))?
-        };
-
-        #[cfg(not(target_os = "linux"))]
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .read(true)
             .open(&file_path)
-            .map_err(|e| WALError::FileOpen(e.to_string()))?;
+            .map_err(|e| WALError::FileOpen(format!("open {}: {}", file_path.display(), e)))?;
 
-        let start_offset = file.metadata().map(|m| m.len()).unwrap_or(0);
-
-        // Initialize encryption (AES-256-GCM at-rest)
         let encryption = Self::init_encryption()?;
 
-        // Initialize immutable signing key (Ed25519)
         let (signing_key, verifying_key) = Self::init_signing_key(node_id)?;
 
         let now = chrono::Utc::now().timestamp_millis() as u64;
+        let last_sync = std::sync::Arc::new(AtomicU64::new(now));
 
-        #[cfg(target_os = "linux")]
-        let iouring_handle = IoUringHandle::new(&file, 256);
+        let (writer_tx, writer_rx) = std::sync::mpsc::channel::<WriterCommand>();
+        let writer_handle = spawn_writer_thread(file, file_path.clone(), writer_rx, last_sync.clone());
 
         let replica_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -436,23 +533,23 @@ impl WriteAheadLog {
         Ok(Self {
             node_id: node_id.to_string(),
             file_path,
-            file: Mutex::new(file),
-            current_offset: AtomicU64::new(start_offset),
-            last_sync: AtomicU64::new(now),
+            last_sync,
             replicas,
             pending: Mutex::new(VecDeque::with_capacity(MAX_BATCH_SIZE * 2)),
             next_seq: AtomicU64::new(1),
             last_hash: Mutex::new([0u8; 32]),
             encryption,
-            signing_key: signing_key.to_bytes(),
+            signing_key,
             verifying_key: verifying_key.to_bytes(),
             replica_runtime,
-            #[cfg(target_os = "linux")]
-            iouring: iouring_handle,
+            writer_tx,
+            writer_handle: Mutex::new(Some(writer_handle)),
         })
     }
 
-    fn init_signing_key(node_id: &str) -> Result<(ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey), WALError> {
+    fn init_signing_key(
+        node_id: &str,
+    ) -> Result<(ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey), WALError> {
         use blake2::Digest;
         // Derive signing key from node_id (or env var for production)
         let seed = match std::env::var("WAL_SIGNING_SEED") {
@@ -464,7 +561,8 @@ impl WriteAheadLog {
             }
             Err(_) => {
                 let mut seed = [0u8; 32];
-                let hash = blake2::Blake2b512::digest(format!("the-bridge-wal-{}", node_id).as_bytes());
+                let hash =
+                    blake2::Blake2b512::digest(format!("the-bridge-wal-{}", node_id).as_bytes());
                 seed.copy_from_slice(&hash[..32]);
                 seed
             }
@@ -478,10 +576,18 @@ impl WriteAheadLog {
         use base64::Engine;
         match std::env::var("WAL_ENCRYPTION_KEY") {
             Ok(key_b64) => {
-                let key_bytes = base64::engine::general_purpose::STANDARD.decode(key_b64.as_bytes())
-                    .map_err(|e| WALError::KeyError(format!("WAL_ENCRYPTION_KEY base64 decode failed: {}", e)))?;
+                let key_bytes = base64::engine::general_purpose::STANDARD
+                    .decode(key_b64.as_bytes())
+                    .map_err(|e| {
+                        WALError::KeyError(format!(
+                            "WAL_ENCRYPTION_KEY base64 decode failed: {}",
+                            e
+                        ))
+                    })?;
                 if key_bytes.len() != 32 {
-                    return Err(WALError::KeyError("WAL_ENCRYPTION_KEY must be 32 bytes (base64)".into()));
+                    return Err(WALError::KeyError(
+                        "WAL_ENCRYPTION_KEY must be 32 bytes (base64)".into(),
+                    ));
                 }
                 let mut key = [0u8; 32];
                 key.copy_from_slice(&key_bytes);
@@ -499,9 +605,9 @@ impl WriteAheadLog {
     #[instrument(skip(self, record), fields(record_type = match &record { WALRecord::PlaceOrder(_) => "PlaceOrder", WALRecord::CancelOrder(_) => "CancelOrder", WALRecord::SettleDOT(_) => "SettleDOT", WALRecord::TradeSettled(_) => "TradeSettled", WALRecord::Heartbeat(_) => "Heartbeat", WALRecord::Snapshot(_) => "Snapshot" }))]
     pub fn append(&self, record: WALRecord) -> Result<u64, WALError> {
         let ts = chrono::Utc::now().timestamp_millis();
-        let mut bytes = bincode::serialize(&record).map_err(|e| WALError::Serialize(e.to_string()))?;
+        let mut bytes = crate::types::bincode_serialize_direct(&record)
+            .map_err(|e| WALError::Serialize(e.to_string()))?;
 
-        // Encrypt if encryption is enabled (production)
         if let Some(ref enc) = self.encryption {
             bytes = enc.encrypt(&bytes)?;
         }
@@ -526,88 +632,36 @@ impl WriteAheadLog {
         let mut entry_hash = [0u8; 32];
         entry_hash.copy_from_slice(&hash_result[..32]);
 
-        let entry = WALEntry { crc32, length, timestamp: ts, record, prev_hash, seq };
+        let entry = WALEntry {
+            crc32,
+            length,
+            timestamp: ts,
+            record,
+            prev_hash,
+            seq,
+        };
 
-        // Build wire format: header(8+8+16+64+16) + payload + signature(64)
-        let header = format!("{:08x}{:08x}{:016x}{}{:016x}", crc32, length, ts, hex::encode(prev_hash), seq);
-        let entry_size = header.len() as u64 + length as u64 + 64;
+        let sig = self.signing_key.sign(&entry_hash);
+        let sig_bytes = sig.to_bytes();
 
-        {
-            let mut file = self.file.lock();
-            let sig = ed25519_dalek::SigningKey::from_bytes(&self.signing_key)
-                .sign(&entry_hash);
-            let sig_bytes = sig.to_bytes();
+        let total_size = NEW_WAL_HEADER_SIZE + bytes.len() + SIG_SIZE;
+        let mut combined = Vec::with_capacity(total_size);
+        combined.extend_from_slice(&WAL_MAGIC_V2.to_le_bytes());
+        combined.extend_from_slice(&crc32.to_le_bytes());
+        combined.extend_from_slice(&length.to_le_bytes());
+        combined.extend_from_slice(&ts.to_le_bytes());
+        combined.extend_from_slice(&prev_hash);
+        combined.extend_from_slice(&seq.to_le_bytes());
+        combined.extend_from_slice(&bytes);
+        combined.extend_from_slice(&sig_bytes);
 
-            // Build combined buffer: header + payload + signature
-            let total_len = header.len() + bytes.len() + 64;
-            let mut combined = vec![0u8; total_len];
-            let mut pos = 0;
-            combined[pos..pos+header.len()].copy_from_slice(header.as_bytes());
-            pos += header.len();
-            combined[pos..pos+bytes.len()].copy_from_slice(&bytes);
-            pos += bytes.len();
-            combined[pos..pos+64].copy_from_slice(&sig_bytes);
+        self.writer_tx
+            .send(WriterCommand::Write(combined))
+            .map_err(|e| WALError::Channel(format!("writer channel: {}", e)))?;
 
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(ref iouring) = self.iouring {
-                    if iouring.is_available() {
-                        let aligned = aligned_buffer(total_len);
-                        let mut buf = aligned;
-                        buf[..total_len].copy_from_slice(&combined);
-                        let offset = self.current_offset.load(Ordering::Relaxed);
-                        iouring.write_at(&buf[..total_len], offset)
-                            .map_err(|e| WALError::IoUring(e.to_string()))?;
-                    } else {
-                        file.write_all(&combined).map_err(|e| WALError::Write(e.to_string()))?;
-                    }
-                } else {
-                    file.write_all(&combined).map_err(|e| WALError::Write(e.to_string()))?;
-                }
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                file.write_all(&combined).map_err(|e| WALError::Write(e.to_string()))?;
-            }
-        }
-
-        self.current_offset.fetch_add(entry_size, Ordering::Relaxed);
         self.pending.lock().push_back((seq, entry));
         *self.last_hash.lock() = entry_hash;
-        info!(seq, entry_size, "WAL entry appended");
-
-        // Flush + replicate every MAX_BATCH_SIZE entries
-        if seq % MAX_BATCH_SIZE as u64 == 0 {
-            let _start = Instant::now();
-
-            #[cfg(target_os = "linux")]
-            {
-                if let Some(ref iouring) = self.iouring {
-                    if iouring.is_available() {
-                        let _ = iouring.sync_all();
-                    } else {
-                        let mut f = self.file.lock();
-                        f.flush().map_err(|e| WALError::Flush(e.to_string()))?;
-                        drop(f);
-                    }
-                } else {
-                    let mut f = self.file.lock();
-                    f.flush().map_err(|e| WALError::Flush(e.to_string()))?;
-                    drop(f);
-                }
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                let mut f = self.file.lock();
-                f.flush().map_err(|e| WALError::Flush(e.to_string()))?;
-                drop(f);
-            }
-
-            self.last_sync.store(ts as u64, Ordering::Relaxed);
-            self.try_replicate().ok();
-        }
+        info!(seq, entry_size = total_size, "WAL entry appended");
 
         Ok(seq)
     }
@@ -618,17 +672,23 @@ impl WriteAheadLog {
 
     pub fn verify_chain(&self, from_seq: u64, to_seq: u64) -> bool {
         let pending = self.pending.lock();
-        let entries: Vec<&WALEntry> = pending.iter()
+        let entries: Vec<&WALEntry> = pending
+            .iter()
             .filter(|(s, _)| *s >= from_seq && *s <= to_seq)
             .map(|(_, e)| e)
             .collect();
 
-        if entries.is_empty() { return true; }
+        if entries.is_empty() {
+            return true;
+        }
 
         let first = entries[0];
         let mut expected_hash = first.prev_hash;
 
         for entry in entries {
+            if entry.prev_hash != expected_hash {
+                return false;
+            }
             let mut hasher = Blake2b512::new();
             hasher.update(entry.seq.to_le_bytes());
             hasher.update(&entry.crc32.to_le_bytes());
@@ -636,41 +696,39 @@ impl WriteAheadLog {
             let hash = hasher.finalize();
             let mut computed = [0u8; 32];
             computed.copy_from_slice(&hash[..32]);
-            if computed != expected_hash && entry.seq > 1 {
-                return false;
-            }
             expected_hash = computed;
         }
         true
     }
 
-    pub fn sync(&self) -> Result<(), WALError> {
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(ref iouring) = self.iouring {
-                if iouring.is_available() {
-                    iouring.sync_all()?;
-                    self.last_sync.store(chrono::Utc::now().timestamp_millis() as u64, Ordering::Relaxed);
-                    return Ok(());
-                }
-            }
-        }
-
-        let mut file = self.file.lock();
-        file.flush().map_err(|e| WALError::Flush(e.to_string()))?;
-        file.sync_all().map_err(|e| WALError::Fsync(e.to_string()))?;
-        self.last_sync.store(chrono::Utc::now().timestamp_millis() as u64, Ordering::Relaxed);
+    pub fn flush(&self) -> Result<(), WALError> {
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel::<()>();
+        self.writer_tx
+            .send(WriterCommand::Flush(ack_tx))
+            .map_err(|e| WALError::Channel(format!("flush: writer channel: {}", e)))?;
+        ack_rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .map_err(|e| WALError::Channel(format!("flush ack: {}", e)))?;
         Ok(())
     }
 
+    pub fn sync(&self) -> Result<(), WALError> {
+        self.flush()
+    }
+
     fn try_replicate(&self) -> Result<(), WALError> {
-        if self.replicas.is_empty() { return Ok(()); }
+        if self.replicas.is_empty() {
+            return Ok(());
+        }
 
         let batch = {
             let pending = self.pending.lock();
-            if pending.is_empty() { return Ok(()); }
+            if pending.is_empty() {
+                return Ok(());
+            }
             let entries: Vec<&WALEntry> = pending.iter().map(|(_, e)| e).collect();
-            bincode::serialize(&entries).map_err(|e| WALError::Serialize(format!("batch serialize: {}", e)))?
+            crate::types::bincode_serialize_direct(&entries)
+                .map_err(|e| WALError::Serialize(format!("batch serialize: {}", e)))?
         };
 
         for replica in &self.replicas {
@@ -684,13 +742,24 @@ impl WriteAheadLog {
             let mut stream = tokio::time::timeout(
                 std::time::Duration::from_millis(100),
                 TcpStream::connect(addr),
-            ).await.map_err(|_| WALError::ReplicaTimeout)?
-              .map_err(|e| WALError::ReplicaConnect(e.to_string()))?;
+            )
+            .await
+            .map_err(|_| WALError::ReplicaTimeout)?
+            .map_err(|e| WALError::ReplicaConnect(e.to_string()))?;
 
             let len = (data.len() as u64).to_le_bytes();
-            stream.write_all(&len).await.map_err(|e| WALError::ReplicaConnect(format!("send len: {}", e)))?;
-            stream.write_all(data).await.map_err(|e| WALError::ReplicaConnect(format!("send data: {}", e)))?;
-            stream.flush().await.map_err(|e| WALError::ReplicaConnect(format!("flush: {}", e)))?;
+            stream
+                .write_all(&len)
+                .await
+                .map_err(|e| WALError::ReplicaConnect(format!("send len: {}", e)))?;
+            stream
+                .write_all(data)
+                .await
+                .map_err(|e| WALError::ReplicaConnect(format!("send data: {}", e)))?;
+            stream
+                .flush()
+                .await
+                .map_err(|e| WALError::ReplicaConnect(format!("flush: {}", e)))?;
 
             let mut ack = [0u8; 1];
             stream.read_exact(&mut ack).await.ok();
@@ -703,94 +772,68 @@ impl WriteAheadLog {
         info!("starting WAL recovery");
         let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&self.verifying_key)
             .map_err(|e| WALError::KeyError(format!("WAL verifying key: {}", e)))?;
-        let mut file = std::fs::File::open(&self.file_path)
-            .map_err(|e| WALError::FileOpen(format!("wal recover open: {}", e)))?;
-        let metadata = file.metadata().map_err(|e| WALError::Metadata(e.to_string()))?;
-        let size = metadata.len() as usize;
-        if size == 0 { return Ok(Vec::new()); }
 
-        let mut buf = Vec::with_capacity(size);
-        file.read_to_end(&mut buf).map_err(|e| WALError::Read(e.to_string()))?;
-
-        let mut records = Vec::new();
-        let mut pos = 0;
-        let mut expected_prev_hash = [0u8; 32];
-        while pos + 112 <= buf.len() {
-            let crc32 = u32::from_str_radix(
-                std::str::from_utf8(&buf[pos..pos+8]).unwrap_or("0"),
-                16
-            ).unwrap_or(0);
-            pos += 8;
-            let length = u32::from_str_radix(
-                std::str::from_utf8(&buf[pos..pos+8]).unwrap_or("0"),
-                16
-            ).unwrap_or(0) as usize;
-            pos += 8;
-            let ts = u64::from_str_radix(
-                std::str::from_utf8(&buf[pos..pos+16]).unwrap_or("0"),
-                16
-            ).unwrap_or(0);
-            pos += 16;
-            let _prev_hash_hex = &buf[pos..pos+64];
-            pos += 64;
-            let seq = u64::from_str_radix(
-                std::str::from_utf8(&buf[pos..pos+16]).unwrap_or("0"),
-                16
-            ).unwrap_or(0);
-            pos += 16;
-
-            if pos + length > buf.len() { break; }
-
-            let mut crc_check = Hasher::new();
-            crc_check.update(&ts.to_le_bytes());
-            crc_check.update(&(length as u32).to_le_bytes());
-            crc_check.update(&buf[pos..pos+length]);
-            if crc_check.finalize() != crc32 { break; }
-
-            let record_bytes = &buf[pos..pos+length];
-            let decrypted = if let Some(ref enc) = self.encryption {
-                enc.decrypt(record_bytes)?
+        let mut all_paths = vec![self.file_path.clone()];
+        for i in 1..=MAX_WAL_FILES {
+            let p = if i == 1 {
+                self.file_path.with_extension("wal.1")
             } else {
-                record_bytes.to_vec()
+                self.file_path.with_extension(format!("wal.{}", i))
             };
-
-            if let Ok(record) = bincode::deserialize::<WALRecord>(&decrypted) {
-                records.push(record);
-
-                // Compute entry hash for signature verification
-                let mut hasher = Blake2b512::new();
-                hasher.update(seq.to_le_bytes());
-                hasher.update(&crc32.to_le_bytes());
-                hasher.update(&expected_prev_hash);
-                let hash_result = hasher.finalize();
-                let mut entry_hash = [0u8; 32];
-                entry_hash.copy_from_slice(&hash_result[..32]);
-
-                // Advance past record data, then try to read trailing Ed25519 signature (64 bytes)
-                // New WALs have signature after each entry; old WALs don't — backward compatible
-                pos += length;
-                if pos + 64 <= buf.len() {
-                    let mut sig_bytes = [0u8; 64];
-                    sig_bytes.copy_from_slice(&buf[pos..pos+64]);
-                    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-                    if verifying_key.verify_strict(&entry_hash, &sig).is_ok() {
-                        expected_prev_hash = entry_hash;
-                        pos += 64;
-                    } else {
-                        tracing::warn!(seq, "WAL: signature verification failed — possible tampering");
-                        break;
-                    }
-                } else {
-                    // No signature present (old WAL format) — update expected hash from data only
-                    expected_prev_hash = entry_hash;
-                }
+            if p.exists() {
+                all_paths.push(p);
             } else {
-                pos += length;
+                break;
             }
         }
 
-        self.current_offset.store(pos as u64, Ordering::Relaxed);
-        tracing::info!(records = records.len(), truncation_point = pos, "WAL recovery complete");
+        let mut records = Vec::new();
+        let mut expected_prev_hash = [0u8; 32];
+
+        for path in &all_paths {
+            let mut file = match std::fs::File::open(path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let metadata = match file.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let size = metadata.len() as usize;
+            if size == 0 {
+                continue;
+            }
+
+            let mut buf = Vec::with_capacity(size);
+            if file.read_to_end(&mut buf).is_err() {
+                continue;
+            }
+
+            if buf.len() >= 4 {
+                let magic = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
+                if magic == WAL_MAGIC_V2 {
+                    let result = recover_v2(
+                        &buf,
+                        &verifying_key,
+                        &self.encryption,
+                        &mut expected_prev_hash,
+                    );
+                    records.extend(result);
+                    continue;
+                }
+            }
+
+            let result = recover_v1(
+                &buf,
+                &verifying_key,
+                &self.encryption,
+                &mut expected_prev_hash,
+            );
+            records.extend(result);
+        }
+
+        *self.last_hash.lock() = expected_prev_hash;
+        tracing::info!(records = records.len(), "WAL recovery complete");
         Ok(records)
     }
 
@@ -799,7 +842,9 @@ impl WriteAheadLog {
         while let Some(front) = pending.front() {
             if front.0 <= keep_seq {
                 pending.pop_front();
-            } else { break; }
+            } else {
+                break;
+            }
         }
         Ok(())
     }
@@ -812,6 +857,186 @@ impl WriteAheadLog {
     pub fn is_healthy(&self) -> bool {
         self.replica_lag() < MAX_REPLICA_LAG
     }
+}
+
+impl Drop for WriteAheadLog {
+    fn drop(&mut self) {
+        let _ = self.writer_tx.send(WriterCommand::Shutdown);
+        if let Some(handle) = self.writer_handle.lock().take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn recover_v1(
+    buf: &[u8],
+    verifying_key: &ed25519_dalek::VerifyingKey,
+    encryption: &Option<EncryptionManager>,
+    expected_prev_hash: &mut [u8; 32],
+) -> Vec<WALRecord> {
+    let mut records = Vec::new();
+    let mut pos = 0;
+    while pos + OLD_WAL_HEADER_SIZE <= buf.len() {
+        let crc32 = u32::from_str_radix(std::str::from_utf8(&buf[pos..pos + 8]).unwrap_or("0"), 16)
+            .unwrap_or(0);
+        pos += 8;
+        let length = u32::from_str_radix(std::str::from_utf8(&buf[pos..pos + 8]).unwrap_or("0"), 16)
+            .unwrap_or(0) as usize;
+        pos += 8;
+        let ts = u64::from_str_radix(std::str::from_utf8(&buf[pos..pos + 16]).unwrap_or("0"), 16)
+            .unwrap_or(0);
+        pos += 16;
+        pos += 64;
+        let seq = u64::from_str_radix(std::str::from_utf8(&buf[pos..pos + 16]).unwrap_or("0"), 16)
+            .unwrap_or(0);
+        pos += 16;
+
+        if pos + length > buf.len() {
+            break;
+        }
+
+        let mut crc_check = Hasher::new();
+        crc_check.update(&ts.to_le_bytes());
+        crc_check.update(&(length as u32).to_le_bytes());
+        crc_check.update(&buf[pos..pos + length]);
+        if crc_check.finalize() != crc32 {
+            break;
+        }
+
+        let record_bytes = &buf[pos..pos + length];
+        let decrypted = if let Some(ref enc) = encryption {
+            match enc.decrypt(record_bytes) {
+                Ok(d) => d,
+                Err(_) => break,
+            }
+        } else {
+            record_bytes.to_vec()
+        };
+
+        if let Ok(record) = crate::types::bincode_deserialize_direct::<WALRecord>(&decrypted) {
+            let mut hasher = Blake2b512::new();
+            hasher.update(seq.to_le_bytes());
+            hasher.update(&crc32.to_le_bytes());
+            hasher.update(&mut *expected_prev_hash);
+            let hash_result = hasher.finalize();
+            let mut entry_hash = [0u8; 32];
+            entry_hash.copy_from_slice(&hash_result[..32]);
+
+            pos += length;
+            if pos + SIG_SIZE <= buf.len() {
+                let mut sig_bytes = [0u8; SIG_SIZE];
+                sig_bytes.copy_from_slice(&buf[pos..pos + SIG_SIZE]);
+                let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+                if verifying_key.verify_strict(&entry_hash, &sig).is_ok() {
+                    *expected_prev_hash = entry_hash;
+                    records.push(record);
+                    pos += SIG_SIZE;
+                } else {
+                    break;
+                }
+            } else {
+                *expected_prev_hash = entry_hash;
+                records.push(record);
+            }
+        } else {
+            pos += length;
+        }
+    }
+    records
+}
+
+fn recover_v2(
+    buf: &[u8],
+    verifying_key: &ed25519_dalek::VerifyingKey,
+    encryption: &Option<EncryptionManager>,
+    expected_prev_hash: &mut [u8; 32],
+) -> Vec<WALRecord> {
+    let mut records = Vec::new();
+    let mut pos = 0;
+
+    while pos + NEW_WAL_HEADER_SIZE <= buf.len() {
+        let magic = u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+        if magic != WAL_MAGIC_V2 {
+            break;
+        }
+
+        let crc32 = u32::from_le_bytes([buf[pos + 4], buf[pos + 5], buf[pos + 6], buf[pos + 7]]);
+        let length =
+            u32::from_le_bytes([buf[pos + 8], buf[pos + 9], buf[pos + 10], buf[pos + 11]]) as usize;
+        let timestamp = i64::from_le_bytes([
+            buf[pos + 12],
+            buf[pos + 13],
+            buf[pos + 14],
+            buf[pos + 15],
+            buf[pos + 16],
+            buf[pos + 17],
+            buf[pos + 18],
+            buf[pos + 19],
+        ]);
+        let seq = u64::from_le_bytes([
+            buf[pos + 52],
+            buf[pos + 53],
+            buf[pos + 54],
+            buf[pos + 55],
+            buf[pos + 56],
+            buf[pos + 57],
+            buf[pos + 58],
+            buf[pos + 59],
+        ]);
+        pos += NEW_WAL_HEADER_SIZE;
+
+        if pos + length > buf.len() {
+            break;
+        }
+
+        let mut crc_check = Hasher::new();
+        crc_check.update(&timestamp.to_le_bytes());
+        crc_check.update(&(length as u32).to_le_bytes());
+        crc_check.update(&buf[pos..pos + length]);
+        if crc_check.finalize() != crc32 {
+            break;
+        }
+
+        let record_bytes = &buf[pos..pos + length];
+        let decrypted = if let Some(ref enc) = encryption {
+            match enc.decrypt(record_bytes) {
+                Ok(d) => d,
+                Err(_) => break,
+            }
+        } else {
+            record_bytes.to_vec()
+        };
+
+        if let Ok(record) = crate::types::bincode_deserialize_direct::<WALRecord>(&decrypted) {
+            let mut hasher = Blake2b512::new();
+            hasher.update(seq.to_le_bytes());
+            hasher.update(&crc32.to_le_bytes());
+            hasher.update(&mut *expected_prev_hash);
+            let hash_result = hasher.finalize();
+            let mut entry_hash = [0u8; 32];
+            entry_hash.copy_from_slice(&hash_result[..32]);
+
+            pos += length;
+            if pos + SIG_SIZE <= buf.len() {
+                let mut sig_bytes = [0u8; SIG_SIZE];
+                sig_bytes.copy_from_slice(&buf[pos..pos + SIG_SIZE]);
+                let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+                if verifying_key.verify_strict(&entry_hash, &sig).is_ok() {
+                    *expected_prev_hash = entry_hash;
+                    records.push(record);
+                    pos += SIG_SIZE;
+                } else {
+                    break;
+                }
+            } else {
+                *expected_prev_hash = entry_hash;
+                records.push(record);
+            }
+        } else {
+            pos += length;
+        }
+    }
+    records
 }
 
 #[cfg(test)]
@@ -850,7 +1075,10 @@ mod tests {
         let enc = EncryptionManager::new(make_test_key());
         let result = enc.decrypt(&[0u8; 5]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("ciphertext too short"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("ciphertext too short"));
     }
 
     #[test]
@@ -892,8 +1120,8 @@ mod tests {
             1.5,
         );
         let record = WALRecord::PlaceOrder(order);
-        let encoded = bincode::serialize(&record).unwrap();
-        let decoded: WALRecord = bincode::deserialize(&encoded).unwrap();
+        let encoded = crate::types::bincode_serialize_direct(&record).unwrap();
+        let decoded: WALRecord = crate::types::bincode_deserialize_direct(&encoded).unwrap();
 
         match decoded {
             WALRecord::PlaceOrder(o) => {
@@ -902,5 +1130,93 @@ mod tests {
             }
             _ => panic!("expected PlaceOrder"),
         }
+    }
+
+    #[test]
+    fn wal_append_recover_roundtrip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wal = WriteAheadLog::new("test-node", tmp.path(), vec![]).expect("create WAL");
+
+        let order = crate::types::Order::new_limit(
+            uuid::Uuid::new_v4(),
+            "BTC/USDT".into(),
+            crate::types::OrderSide::Buy,
+            50000.0,
+            1.5,
+        );
+        let seq = wal
+            .append(WALRecord::PlaceOrder(order.clone()))
+            .expect("append");
+        assert_eq!(seq, 1);
+
+        wal.flush().expect("flush");
+        drop(wal);
+
+        let wal2 = WriteAheadLog::new("test-node", tmp.path(), vec![]).expect("create WAL 2");
+        let records = wal2.recover().expect("recover");
+        assert_eq!(records.len(), 1);
+        match &records[0] {
+            WALRecord::PlaceOrder(o) => {
+                assert_eq!(o.pair.as_str(), "BTC/USDT");
+                assert_eq!(o.price, 50000.0);
+            }
+            _ => panic!("expected PlaceOrder"),
+        }
+    }
+
+    #[test]
+    fn wal_empty_recover() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wal = WriteAheadLog::new("test-empty", tmp.path(), vec![]).expect("create WAL");
+        let records = wal.recover().expect("recover");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn wal_multiple_entries() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wal = WriteAheadLog::new("test-multi", tmp.path(), vec![]).expect("create WAL");
+
+        for i in 0..10 {
+            let order = crate::types::Order::new_limit(
+                uuid::Uuid::new_v4(),
+                "BTC/USDT".into(),
+                crate::types::OrderSide::Buy,
+                50000.0 + i as f64,
+                1.0,
+            );
+            wal.append(WALRecord::PlaceOrder(order)).expect("append");
+        }
+        wal.flush().expect("flush");
+        drop(wal);
+
+        let wal2 = WriteAheadLog::new("test-multi", tmp.path(), vec![]).expect("create WAL 2");
+        let records = wal2.recover().expect("recover");
+        assert_eq!(records.len(), 10);
+    }
+
+    #[test]
+    fn wal_chain_verification() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let wal = WriteAheadLog::new("test-chain", tmp.path(), vec![]).expect("create WAL");
+
+        for i in 0..5 {
+            let order = crate::types::Order::new_limit(
+                uuid::Uuid::new_v4(),
+                "BTC/USDT".into(),
+                crate::types::OrderSide::Buy,
+                50000.0 + i as f64,
+                1.0,
+            );
+            wal.append(WALRecord::PlaceOrder(order)).expect("append");
+        }
+        wal.flush().expect("flush");
+
+        assert!(wal.verify_chain(1, 5));
+        drop(wal);
+
+        let wal2 = WriteAheadLog::new("test-chain", tmp.path(), vec![]).expect("create WAL 2");
+        let records = wal2.recover().expect("recover");
+        assert_eq!(records.len(), 5);
     }
 }

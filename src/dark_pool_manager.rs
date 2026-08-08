@@ -1,16 +1,15 @@
-use std::fmt;
 
 use tokio::sync::RwLock;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{info, error, warn, debug};
+use tracing::{info, error, warn};
 
-use crate::types::{Order, OrderSide, Track, OrderStatus, OrderType, OrderStyle};
-use crate::threshold_crypto::{ThresholdCrypto, DecryptedOrder, EncryptedOrder, ZKProof};
-use crate::encrypted_mempool::{EncryptedMempool, MempoolOrder, BatchAuctionResult as MempoolBatchAuctionResult};
-use crate::ghost_integration::{GhostCloak, BrokerEndpoint, BrokerEvasionStrategy, TimingObfuscation};
-use crate::smart_router::{SmartOrderRouter, RouteRequest, RouteResult};
-use crate::batch_auction::{FBAMatchingEngine, BatchAuctionConfig, BatchAuctionResult, BatchAuctionStats};
+use crate::types::{Order, OrderSide, Track};
+use crate::threshold_crypto::DecryptedOrder;
+use crate::encrypted_mempool::EncryptedMempool;
+use crate::ghost_integration::{GhostCloak, BrokerEndpoint};
+use crate::smart_router::{SmartOrderRouter, RouteRequest};
+use crate::batch_auction::{FBAMatchingEngine, BatchAuctionResult};
 use crate::orderbook::OrderBookManager;
 
 use serde::{Deserialize, Serialize};
@@ -153,7 +152,7 @@ impl SovereignDarkPool {
         self.config.clone()
     }
 
-    pub async fn start(&mut self) -> Result<(), String> {
+    pub async fn start(&self) -> Result<(), String> {
         let mut state = self.state.write().await;
         state.running = true;
         state.started_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -328,10 +327,11 @@ impl SovereignDarkPool {
     fn decrypted_to_order(decrypted: &DecryptedOrder) -> Order {
         use crate::types::{Order, OrderSide, Track, OrderStatus, OrderStyle, OrderType};
         use uuid::Uuid;
-        use compact_str::CompactString;
+        
         
         Order {
             id: Uuid::parse_str(&decrypted.order_id).unwrap_or_else(|_| Uuid::new_v4()),
+            id_tag: 0,
             user_id: Uuid::parse_str(&decrypted.user_id).unwrap_or_else(|_| Uuid::new_v4()),
             pair: decrypted.pair.clone().into(),
             side: if decrypted.side == "buy" { OrderSide::Buy } else { OrderSide::Sell },
@@ -367,6 +367,12 @@ impl SovereignDarkPool {
 pub struct DarkPoolManager {
     dark_pool: Option<SovereignDarkPool>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
+    mempool: Option<Arc<EncryptedMempool>>,
+    fba_engine: Option<Arc<FBAMatchingEngine>>,
+    ghost: Option<Arc<GhostCloak>>,
+    router: Option<Arc<RwLock<SmartOrderRouter>>>,
+    orderbook: Option<Arc<OrderBookManager>>,
+    config: Option<DarkPoolConfig>,
 }
 
 impl DarkPoolManager {
@@ -375,7 +381,21 @@ impl DarkPoolManager {
         Self {
             dark_pool: None,
             shutdown_tx,
+            mempool: None,
+            fba_engine: None,
+            ghost: None,
+            router: None,
+            orderbook: None,
+            config: None,
         }
+    }
+
+    pub fn is_initialized(&self) -> bool {
+        self.dark_pool.is_some()
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.dark_pool.is_some()
     }
 
     pub async fn initialize(
@@ -386,15 +406,60 @@ impl DarkPoolManager {
         router: Arc<RwLock<SmartOrderRouter>>,
         orderbook: Arc<OrderBookManager>,
     ) -> Result<(), String> {
-        let config = DarkPoolConfig::default();
-        let mut dark_pool = SovereignDarkPool::new(mempool, fba_engine, ghost, router, orderbook, config);
+        let config = self.config.clone().unwrap_or_default();
+        let mut dark_pool = SovereignDarkPool::new(
+            mempool.clone(),
+            fba_engine.clone(),
+            ghost.clone(),
+            router.clone(),
+            orderbook.clone(),
+            config.clone(),
+        );
         
-        dark_pool.start().await?;
-
+        self.mempool = Some(mempool);
+        self.fba_engine = Some(fba_engine);
+        self.ghost = Some(ghost);
+        self.router = Some(router);
+        self.orderbook = Some(orderbook);
+        self.config = Some(config);
         self.dark_pool = Some(dark_pool);
         
         info!("Dark Pool initialized successfully");
         Ok(())
+    }
+
+    pub async fn start_pool(&mut self) -> Result<(), String> {
+        if self.dark_pool.is_some() {
+            return Err("Dark Pool already running".to_string());
+        }
+        let mempool = self.mempool.clone()
+            .ok_or_else(|| "Dark Pool not initialized — call initialize first".to_string())?;
+        let fba_engine = self.fba_engine.clone()
+            .ok_or_else(|| "Dark Pool not initialized".to_string())?;
+        let ghost = self.ghost.clone()
+            .ok_or_else(|| "Dark Pool not initialized".to_string())?;
+        let router = self.router.clone()
+            .ok_or_else(|| "Dark Pool not initialized".to_string())?;
+        let orderbook = self.orderbook.clone()
+            .ok_or_else(|| "Dark Pool not initialized".to_string())?;
+        let config = self.config.clone().unwrap_or_default();
+
+        let mut dark_pool = SovereignDarkPool::new(mempool, fba_engine, ghost, router, orderbook, config);
+        dark_pool.start().await?;
+        self.dark_pool = Some(dark_pool);
+        info!("Dark Pool started");
+        Ok(())
+    }
+
+    pub async fn stop_pool(&mut self) -> Result<(), String> {
+        match self.dark_pool.take() {
+            Some(dp) => {
+                dp.shutdown().await;
+                info!("Dark Pool stopped");
+                Ok(())
+            }
+            None => Err("Dark Pool not running".to_string()),
+        }
     }
 
     pub async fn get_status(&self) -> DarkPoolState {
@@ -415,6 +480,44 @@ impl DarkPoolManager {
         if let Some(dp) = &self.dark_pool {
             dp.shutdown().await;
         }
+    }
+
+    pub async fn get_trades(&self) -> Vec<crate::batch_auction::BatchTrade> {
+        match self.fba_engine.as_ref() {
+            Some(engine) => {
+                let _stats = engine.get_fba_stats().await;
+                let batches = engine.batch_engine().get_recent_batches(10).await;
+                let mut trades = Vec::new();
+                for batch in &batches {
+                    trades.extend(batch.matched_trades.clone());
+                }
+                trades
+            }
+            None => Vec::new(),
+        }
+    }
+
+    pub async fn get_fba_stats(&self) -> crate::batch_auction::BatchAuctionStats {
+        match self.fba_engine.as_ref() {
+            Some(engine) => engine.get_fba_stats().await,
+            None => crate::batch_auction::BatchAuctionStats {
+                pending_buy: 0,
+                pending_sell: 0,
+                total_batches: 0,
+                last_clearing_price: None,
+                avg_clearing_price: 0,
+                total_volume_all_time: 0,
+            },
+        }
+    }
+
+    pub async fn configure(&mut self, new_config: DarkPoolConfig) -> Result<(), String> {
+        self.config = Some(new_config.clone());
+        Ok(())
+    }
+
+    pub fn get_config(&self) -> DarkPoolConfig {
+        self.config.clone().unwrap_or_default()
     }
 }
 

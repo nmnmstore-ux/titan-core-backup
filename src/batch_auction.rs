@@ -2,9 +2,8 @@ use crate::types::{Order, OrderSide, OrderType, Track, OrderStatus, OrderStyle};
 use crate::orderbook::OrderBookManager;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +306,7 @@ impl FBAMatchingEngine {
             client_order_id: None,
             filled_quantity: 0,
                 id: uuid::Uuid::parse_str(&trade.buy_order_id).unwrap_or_default(),
+                id_tag: 0,
                 user_id: uuid::Uuid::parse_str(&trade.buyer_user_id).unwrap_or_default(),
                 pair: result.matched_trades[0].buy_order_id.parse().unwrap_or_default(),
                 order_type: OrderType::Limit,

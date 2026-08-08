@@ -1,0 +1,42 @@
+[package]
+name = "the-bridge-expansion-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "THE-BRIDGE expansion module integration"
+
+[features]
+default = ["all"]
+all = ["ai-ceo", "pwa-auth", "fiat-offramp"]
+ai-ceo = ["dep:ai_ceo_bridge"]
+pwa-auth = ["dep:pwa_auth"]
+fiat-offramp = ["dep:fiat_offramp"]
+
+[[bin]]
+name = "expansion-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "compression-gzip"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+http = { workspace = true }
+chrono = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+ai_ceo_bridge = { path = "../ai_ceo_bridge", package = "ai-ceo-bridge", optional = true }
+pwa_auth = { path = "../pwa_auth", package = "the-bridge-pwa-auth", optional = true }
+fiat_offramp = { path = "../fiat_offramp", package = "the-bridge-fiat-offramp", optional = true }
+grpc_protos = { path = "../grpc_protos", package = "the-bridge-grpc-protos" }
+shared_types = { path = "../shared_types", package = "the-bridge-shared-types" }
+
+[dev-dependencies]
+tokio = { workspace = true }

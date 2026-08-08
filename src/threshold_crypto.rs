@@ -1,9 +1,6 @@
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use parking_lot::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,7 +205,7 @@ impl ThresholdCrypto {
         let challenge = hasher.finalize().to_vec();
 
         let mut response = Vec::new();
-        for (i, byte) in plaintext.iter().enumerate() {
+        for (_i, byte) in plaintext.iter().enumerate() {
             let mut computed = *byte;
             for j in 0..32 {
                 let byte_idx = j / 8;

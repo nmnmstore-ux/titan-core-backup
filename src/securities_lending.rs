@@ -57,7 +57,7 @@ pub struct SecuritiesLendingSnapshot {
 pub struct SecuritiesLending {
     assets: Arc<DashMap<String, LendableAsset>>,
     offers: Arc<DashMap<u64, LendOffer>>,
-    agreements: Arc<DashMap<u64, BorrowAgreement>>,
+    pub agreements: Arc<DashMap<u64, BorrowAgreement>>,
     next_offer_id: AtomicU64,
     next_agreement_id: AtomicU64,
     total_fees_collected: AtomicU64,

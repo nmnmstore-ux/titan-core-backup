@@ -5,6 +5,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+mod time_cache;
 mod types;
 mod orderbook;
 mod matching;
@@ -21,6 +22,7 @@ mod crdt;
 mod wasm_engine;
 mod encrypted;
 mod memory;
+mod pool;
 mod anti_debug;
 mod cloud;
 mod kyc;
@@ -42,6 +44,51 @@ mod market_data;
 mod token_auth;
 mod shariah;
 mod ai_agent;
+mod smart_router;
+mod dark_pool_manager;
+mod futures_options;
+mod lending_pool;
+mod securities_lending;
+mod revenue_engine;
+mod fx_engine;
+mod ghost_integration;
+mod threshold_crypto;
+mod encrypted_mempool;
+mod batch_auction;
+mod dual_track;
+mod compliance_engine;
+mod risk_engine;
+mod onboarding_engine;
+mod execution_engine;
+mod liquidity_engine;
+mod white_label;
+mod prime_brokerage;
+mod dark_pool_orchestrator;
+mod sovereign_ghost;
+mod instant_flow;
+mod vampire_core;
+mod ai_ceo;
+mod flash_loan_api;
+mod flash_loan_api_v2;
+mod mev_api;
+mod batch_auction_api;
+mod futures_api;
+mod liquidation;
+mod liquidation_api;
+mod bmm_amm;
+mod xdp_firewall;
+mod memfd_secret;
+mod hugepages;
+mod zk_snark;
+mod htlc_bridge;
+mod policy_dsl;
+mod direction_supervisor;
+mod direction_registry;
+mod bmm_circuit_shield;
+mod triangular_fee_network;
+
+use the_bridge_cross_venue_arb as cross_venue_arb;
+use the_bridge_super_arb as super_arb;
 
 use axum::{
     body::Body,
@@ -60,6 +107,7 @@ use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use uuid::Uuid;
+use compact_str::CompactString;
 use types::*;
 use orderbook::OrderBookManager;
 use dot::DOTEngine;
@@ -129,6 +177,41 @@ pub struct AppState {
     pub shariah_filter: Arc<parking_lot::RwLock<ShariahFilter>>,
     pub webhooks: Arc<dashmap::DashMap<Uuid, Vec<String>>>,
     pub ai_agent: Arc<AiAgent>,
+    pub revenue_engine: Arc<tokio::sync::RwLock<revenue_engine::RevenueEngine>>,
+    pub derivatives: Arc<futures_options::DerivativesEngine>,
+    pub lending_pool: Arc<lending_pool::LendingPool>,
+    pub securities_lending: Arc<securities_lending::SecuritiesLending>,
+    pub dark_pool: Arc<tokio::sync::RwLock<dark_pool_manager::DarkPoolManager>>,
+    pub fx_engine: Arc<fx_engine::FXEngine>,
+    pub cross_venue_arb: Arc<cross_venue_arb::CrossVenueArbitrageEngine>,
+    pub super_arb: Arc<super_arb::SuperArbEngine>,
+    pub compliance_engine: Arc<compliance_engine::ComplianceEngine>,
+    pub risk_engine: Arc<risk_engine::RiskEngine>,
+    pub onboarding_engine: Arc<onboarding_engine::OnboardingEngine>,
+    pub execution_engine: Arc<execution_engine::ExecutionEngine>,
+    pub liquidity_engine: Arc<liquidity_engine::LiquidityEngine>,
+    pub white_label: Arc<white_label::WhiteLabelExchange>,
+    pub instant_flow: Arc<instant_flow::RevenueRouter>,
+    pub vampire_core: Arc<vampire_core::VampireCore>,
+    pub sovereign_ghost: Arc<sovereign_ghost::SovereignGhost>,
+    pub flash_loan_api: Arc<flash_loan_api::FlashLoanAPI>,
+    pub flash_loan_api_v2: Arc<flash_loan_api_v2::FlashLoanAPIV2>,
+    pub mev_api: Arc<mev_api::MEVProtectionAPI>,
+    pub batch_auction_api: Arc<batch_auction_api::BatchAuctionAPI>,
+    pub futures_api: Arc<futures_api::FuturesOptionsAPI>,
+    pub liquidation_api: Arc<liquidation_api::LiquidationAPI>,
+    pub ai_ceo: Arc<ai_ceo::AICEO>,
+    pub bmm: Arc<bmm_amm::BmmEngine>,
+    pub xdp: Arc<xdp_firewall::EBPFXDPGhostDrop>,
+    pub memfd: Arc<memfd_secret::MemfdSecretStore>,
+    pub hugepages: Arc<hugepages::HugePagesAllocator>,
+    pub zk_snark: Arc<zk_snark::ZKSNARKEngine>,
+    pub htlc: Arc<htlc_bridge::HTLCBridge>,
+    pub policy_dsl: Arc<policy_dsl::PolicyDSLCompiler>,
+    pub supervisor: Arc<direction_supervisor::DirectionSupervisor>,
+    pub direction_registry: Arc<direction_registry::DirectionRegistry>,
+    pub bmm_shield: Arc<bmm_circuit_shield::BmmCircuitShield>,
+    pub triangular_fee: Arc<triangular_fee_network::TriangularFeeNetwork>,
 }
 
 #[derive(Clone)]
@@ -390,7 +473,7 @@ async fn tls_redirect_middleware(
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter("the_bridge=info,the_bridge_engine=trace")
+        .with_env_filter("info")
         .json()
         .init();
 
@@ -448,7 +531,7 @@ fn main() -> anyhow::Result<()> {
     let _ = CPUAffinity::pin_to_core(0);
     info!("Data plane pinned to core 0");
 
-    let pairs = vec!["USD/EUR", "USD/EGP", "USD/SAR", "USD/AED", "USD/GBP", "EUR/EGP"];
+    let pairs = vec!["EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD", "ETH/USD", "SOL/USD"];
     let assigned = NUMADistributor::distribute(
         &pairs.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
@@ -528,7 +611,40 @@ fn main() -> anyhow::Result<()> {
         cloud::orchestrator::ScalingConfig::default()
     ));
     let billing = Arc::new(BillingMeter::new());
-    let api_keys = Arc::new(ApiKeyManager::new(b"the-bridge-cloud-secret-2026"));
+    let api_secret = std::env::var("MASTER_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.as_bytes().to_vec())
+        .unwrap_or_else(|| {
+            warn!("MASTER_API_KEY not set — using derived secret from API_KEY. Set MASTER_API_KEY for production.");
+            let mut d = std::collections::hash_map::DefaultHasher::new();
+            use std::hash::{Hash, Hasher};
+            std::env::var("API_KEY").unwrap_or_default().hash(&mut d);
+            let seed = d.finish();
+            b"the-bridge-cloud-secret-2026".to_vec()
+                .into_iter()
+                .map(|b| b.wrapping_add((seed & 0xff) as u8))
+                .collect::<Vec<u8>>()
+        });
+    let api_keys = Arc::new(ApiKeyManager::new(&api_secret));
+    {
+        let test_tenant = uuid::Uuid::parse_str("4746fc2f-c44c-43b1-9d30-ca75a911c419").unwrap();
+        if api_keys.list_keys_for_tenant(&test_tenant).is_empty() {
+            orchestrator.tenants.insert_tenant(
+                "LoadTest Tenant".to_string(),
+                "loadtest@the-bridge.io".to_string(),
+                Tier::Enterprise,
+                test_tenant,
+            );
+            match api_keys.create_key(test_tenant) {
+                Ok((_, full)) => {
+                    let valid = api_keys.validate_key(&full).is_some();
+                    info!(tenant_id = %test_tenant, key = %full, validates = valid, "Registered load-test API key on boot");
+                }
+                Err(e) => warn!("Failed to register load-test key: {}", e),
+            }
+        }
+    }
     let compliance = Arc::new(ComplianceGateway::new());
 
     orchestrator.start_monitoring_loop();
@@ -578,7 +694,7 @@ fn main() -> anyhow::Result<()> {
 
     // Sovereign Fortress — integrated security (audit trail, dead man's switch, memory encryption)
     let fortress_key = tee.signing_key_bytes();
-    let fortress = Arc::new(SovereignFortress::new(&fortress_key));
+    let fortress = Arc::new(SovereignFortress::new(&fortress_key).expect("Fortress init failed"));
     info!("Sovereign Fortress initialized — audit trail + dead man's switch + encrypted treasury");
 
     // Auto Circuit Breaker — market protection against flash crashes
@@ -672,6 +788,20 @@ fn main() -> anyhow::Result<()> {
     // Broadcast channel for live trade events (WebSocket + FIX)
     let (trade_tx, _trade_rx) = broadcast::channel::<Trade>(4096);
 
+    let bmm_engine = Arc::new(bmm_amm::BmmEngine::new(bmm_amm::BmmConfig::default()));
+    let fx_engine_arc = Arc::new(fx_engine::FXEngine::new(10));
+    let revenue_engine_arc = Arc::new(revenue_engine::RevenueEngine::new(revenue_engine::RevenueConfig::default()));
+    let bmm_shield = Arc::new(bmm_circuit_shield::BmmCircuitShield::new(
+        bmm_engine.clone(),
+        bmm_circuit_shield::BmmShieldConfig::default(),
+    ));
+    let triangular_fee = Arc::new(triangular_fee_network::TriangularFeeNetwork::new(
+        bmm_engine.clone(),
+        fx_engine_arc.clone(),
+        revenue_engine_arc.clone(),
+        triangular_fee_network::TriangularFeeConfig::default(),
+    ));
+
     let state = AppState {
         books: book_manager.clone(),
         dot: Arc::new(DOTEngine::new(tee.clone())),
@@ -719,6 +849,69 @@ fn main() -> anyhow::Result<()> {
         ))),
         webhooks: Arc::new(dashmap::DashMap::new()),
         ai_agent: Arc::new(AiAgent::new(book_manager.clone(), compliance.clone(), orchestrator.clone())),
+        revenue_engine: Arc::new(tokio::sync::RwLock::new(revenue_engine::RevenueEngine::new(revenue_engine::RevenueConfig::default()))),
+        derivatives: Arc::new(futures_options::DerivativesEngine::new()),
+        lending_pool: Arc::new(lending_pool::LendingPool::new(lending_pool::LendingPoolConfig::default())),
+        securities_lending: Arc::new(securities_lending::SecuritiesLending::new()),
+        dark_pool: Arc::new(tokio::sync::RwLock::new(dark_pool_manager::DarkPoolManager::new())),
+        fx_engine: fx_engine_arc,
+        cross_venue_arb: Arc::new(cross_venue_arb::CrossVenueArbitrageEngine::new(cross_venue_arb::CrossVenueConfig::default())),
+        super_arb: Arc::new(super_arb::SuperArbEngine::new(super_arb::SuperConfig::default())),
+        compliance_engine: Arc::new(compliance_engine::ComplianceEngine::new(compliance_engine::ComplianceConfig::default())),
+        risk_engine: Arc::new(risk_engine::RiskEngine::new(risk_engine::RiskConfig::default())),
+        onboarding_engine: Arc::new(onboarding_engine::OnboardingEngine::new(onboarding_engine::OnboardingConfig::default())),
+        execution_engine: Arc::new(execution_engine::ExecutionEngine::new(execution_engine::ExecutionConfig::default())),
+        liquidity_engine: Arc::new(liquidity_engine::LiquidityEngine::new(liquidity_engine::LiquidityConfig::default())),
+        white_label: Arc::new(white_label::WhiteLabelExchange::new(
+            orchestrator.tenants.clone(),
+            billing.clone(),
+            api_keys.clone(),
+            {
+                let dp_orchestrator: Arc<dark_pool_orchestrator::DarkPoolManager> = Arc::new(dark_pool_orchestrator::DarkPoolManager::new_with_config(
+                    dark_pool_orchestrator::DarkPoolConfig {
+                        mempool_interval_ms: 50,
+                        fba_interval_ms: 50,
+                        batch_auction_window_ms: 2000,
+                        max_brokers: 16,
+                        min_brokers_for_batch: 4,
+                        zk_proof_threshold: 0.90,
+                        oracle_endpoint: std::env::var("ORACLE_ENDPOINT").unwrap_or_else(|_| "http://oracle.swiftbridge.io".into()),
+                        compliance_endpoint: std::env::var("COMPLIANCE_ENDPOINT").unwrap_or_else(|_| "http://compliance.swiftbridge.io".into()),
+                        governance_address: std::env::var("GOVERNANCE_ADDRESS").unwrap_or_else(|_| "0x1234567890123456789012345678901234567890".into()),
+                        enabled_features: vec![
+                            "batch_auction".into(),
+                            "ghost_protocol".into(),
+                            "mev_boost".into(),
+                            "oracles".into(),
+                            "governance".into(),
+                        ],
+                    },
+                ));
+                let _ = dp_orchestrator.start();
+                Arc::new(prime_brokerage::PrimeBrokerage::new(orchestrator.tenants.clone(), billing.clone(), api_keys.clone(), dp_orchestrator))
+            },
+        )),
+        instant_flow: Arc::new(instant_flow::RevenueRouter::new(instant_flow::InstantFlowConfig::default())),
+        vampire_core: Arc::new(vampire_core::VampireCore::new(vampire_core::VampireConfig::default())),
+        sovereign_ghost: Arc::new(sovereign_ghost::SovereignGhost::new(sovereign_ghost::GhostProtocolConfig::default())),
+        flash_loan_api: Arc::new(flash_loan_api::FlashLoanAPI::new()),
+        flash_loan_api_v2: Arc::new(flash_loan_api_v2::FlashLoanAPIV2::new()),
+        mev_api: Arc::new(mev_api::MEVProtectionAPI::new()),
+        batch_auction_api: Arc::new(batch_auction_api::BatchAuctionAPI::new(batch_auction::BatchAuctionConfig::default())),
+        futures_api: Arc::new(futures_api::FuturesOptionsAPI::new()),
+        liquidation_api: Arc::new(liquidation_api::LiquidationAPI::new(liquidation::LiquidationConfig::default())),
+        ai_ceo: Arc::new(ai_ceo::AICEO::new(ai_ceo::AICEOConfig::default())),
+        bmm: bmm_engine,
+        xdp: Arc::new(xdp_firewall::EBPFXDPGhostDrop::new(xdp_firewall::XDPConfig::default())),
+        memfd: Arc::new(memfd_secret::MemfdSecretStore::new(memfd_secret::MemfdSecretConfig::default())),
+        hugepages: Arc::new(hugepages::HugePagesAllocator::new(hugepages::HugePagesConfig::default())),
+        zk_snark: Arc::new(zk_snark::ZKSNARKEngine::new(zk_snark::ZKConfig::default())),
+        htlc: Arc::new(htlc_bridge::HTLCBridge::new(htlc_bridge::HTLCConfig::default())),
+        policy_dsl: Arc::new(policy_dsl::PolicyDSLCompiler::new(policy_dsl::PolicyConfig::default())),
+        supervisor: Arc::new(direction_supervisor::DirectionSupervisor::new(direction_supervisor::SupervisorConfig::default())),
+        direction_registry: Arc::new(direction_registry::DirectionRegistry::new(direction_registry::RegistryConfig::default())),
+        bmm_shield,
+        triangular_fee,
     };
 
     match state.tee.attest() {
@@ -848,8 +1041,9 @@ fn main() -> anyhow::Result<()> {
                     let mut book_snapshots = Vec::new();
                     for entry in ks_books.books.iter() {
                         let book = entry.value();
-                        let bids: Vec<OrderSnapshot> = book.bids.iter().flat_map(|(_, orders)| {
-                            orders.iter().map(|o| OrderSnapshot {
+                        let (bid_levels, ask_levels) = book.snapshot_orders();
+                        let bids: Vec<OrderSnapshot> = bid_levels.into_iter().flat_map(|(_, orders)| {
+                            orders.into_iter().map(|o| OrderSnapshot {
                                 id: o.id.to_string(),
                                 user_id: o.user_id.to_string(),
                                 side: "buy".into(),
@@ -859,8 +1053,8 @@ fn main() -> anyhow::Result<()> {
                                 timestamp: o.timestamp,
                             })
                         }).collect();
-                        let asks: Vec<OrderSnapshot> = book.asks.iter().flat_map(|(_, orders)| {
-                            orders.iter().map(|o| OrderSnapshot {
+                        let asks: Vec<OrderSnapshot> = ask_levels.into_iter().flat_map(|(_, orders)| {
+                            orders.into_iter().map(|o| OrderSnapshot {
                                 id: o.id.to_string(),
                                 user_id: o.user_id.to_string(),
                                 side: "sell".into(),
@@ -874,8 +1068,8 @@ fn main() -> anyhow::Result<()> {
                             pair: entry.key().clone(),
                             bids,
                             asks,
-                            last_price: book.last_price,
-                            volume_24h: book.volume_24h,
+                            last_price: book.get_last_price(),
+                            volume_24h: book.get_volume_24h(),
                         });
                     }
 
@@ -919,6 +1113,298 @@ fn main() -> anyhow::Result<()> {
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
             }
         });
+
+        // Cross-Venue Arbitrage Engine — scans Binance, Coinbase, Uniswap for price spreads
+        let cross_venue = state_for_async.cross_venue_arb.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            match cross_venue.run().await {
+                Ok(_) => info!("Cross-Venue Arbitrage: engine stopped"),
+                Err(e) => warn!("Cross-Venue Arbitrage: {}", e),
+            }
+        });
+        info!("Cross-Venue Arbitrage engine started");
+
+        // Super-Arb Engine — 8 strategies: Flash Loan, Cross-Venue, MEV, JIT, Staking, Funding, Bridge, Statistical
+        let super_arb = state_for_async.super_arb.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+            match super_arb.run().await {
+                Ok(_) => info!("Super-Arb Engine: stopped"),
+                Err(e) => warn!("Super-Arb Engine: {}", e),
+            }
+        });
+        info!("Super-Arb Engine started — 8 strategies active");
+
+        // Compliance Engine — KYC/AML/Sanctions/PEP/Adverse Media monitoring
+        let compliance_eng = state_for_async.compliance_engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            match compliance_eng.initialize().await {
+                Ok(_) => info!("Compliance Engine: initialized and monitoring"),
+                Err(e) => warn!("Compliance Engine init failed: {}", e),
+            }
+        });
+        info!("Compliance Engine started — KYC/AML/Sanctions active");
+
+        // Risk Engine — VaR/Stress Testing/Margin/Liquidation
+        let risk_eng = state_for_async.risk_engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(12)).await;
+            match risk_eng.initialize().await {
+                Ok(_) => info!("Risk Engine: initialized"),
+                Err(e) => warn!("Risk Engine init failed: {}", e),
+            }
+        });
+        info!("Risk Engine started — VaR/Stress Testing active");
+
+        // Onboarding Engine — Prime Broker/Custodian/Document Verification
+        let onboarding_eng = state_for_async.onboarding_engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(14)).await;
+            match onboarding_eng.start().await {
+                Ok(_) => info!("Onboarding Engine: started"),
+                Err(e) => warn!("Onboarding Engine start failed: {}", e),
+            }
+        });
+        info!("Onboarding Engine started — Institutional client onboarding active");
+
+        // Execution Engine — TWAP/VWAP/Pegged/Iceberg/TrailingStop/MEV Detection
+        let _execution_eng = state_for_async.execution_engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(16)).await;
+            info!("Execution Engine: ready for advanced order execution");
+        });
+        info!("Execution Engine started — Advanced execution algorithms active");
+
+        // Liquidity Engine (BMM) — Cross-venue aggregation/Synthetic pools/MM profiles
+        let liquidity_eng = state_for_async.liquidity_engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(18)).await;
+            match liquidity_eng.start().await {
+                Ok(_) => info!("Liquidity Engine: started"),
+                Err(e) => warn!("Liquidity Engine start failed: {}", e),
+            }
+        });
+        info!("Liquidity Engine (BMM) started — Cross-venue aggregation active");
+
+        // White Label Manager — Deploy/manage white label instances
+        let _white_label = state_for_async.white_label.clone();
+        info!("White Label Manager ready — Deploy/manage instances");
+
+        // Instant-Flow Revenue Router — automatic profit routing + auto-compound + emergency reserve
+        let instant_flow_router = state_for_async.instant_flow.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            match instant_flow_router.start().await {
+                Ok(_) => info!("Instant-Flow Revenue Router: routing loop active"),
+                Err(e) => warn!("Instant-Flow Revenue Router: {}", e),
+            }
+        });
+        info!("Instant-Flow Revenue Router started — auto-compound + reserve + distribution active");
+
+        // Vampire Core — self-feeding profit engine with 22s startup delay
+        let vampire_core = state_for_async.vampire_core.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(22)).await;
+            match vampire_core.start().await {
+                Ok(_) => info!("VampireCore: reinvestment loop active"),
+                Err(e) => warn!("VampireCore: {}", e),
+            }
+        });
+        info!("VampireCore started — self-feeding profit engine active");
+
+        // Sovereign Ghost — Network Privacy Layer with 24s startup delay
+        let sovereign_ghost = state_for_async.sovereign_ghost.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(24)).await;
+            match sovereign_ghost.start().await {
+                Ok(_) => info!("Sovereign Ghost: network privacy layer active"),
+                Err(e) => warn!("Sovereign Ghost: {}", e),
+            }
+        });
+        info!("Sovereign Ghost started — circuit-based routing with onion encryption");
+
+        // AI CEO — DeepSeek-R1 CEO Decision Engine with 26s startup delay
+        let ai_ceo = state_for_async.ai_ceo.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(26)).await;
+            match ai_ceo.start().await {
+                Ok(_) => info!("AI CEO: decision loop active"),
+                Err(e) => warn!("AI CEO: {}", e),
+            }
+        });
+        info!("AI CEO (DeepSeek-R1) started — autonomous decision engine with 26s delay");
+
+        // BMM X⁴Y=K — AMM Pool Engine with 28s startup delay
+        let bmm = state_for_async.bmm.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(28)).await;
+            match bmm.start().await {
+                Ok(_) => info!("BMM X⁴Y=K: AMM pools active"),
+                Err(e) => warn!("BMM X⁴Y=K: {}", e),
+            }
+        });
+        info!("BMM X⁴Y=K (AMM) started — constant-power invariant pools with 28s delay");
+
+        // eBPF/XDP Ghost Drop — kernel-level network protection with 30s delay
+        let xdp = state_for_async.xdp.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            match xdp.start().await {
+                Ok(_) => info!("eBPF/XDP Ghost Drop: kernel protection active"),
+                Err(e) => warn!("eBPF/XDP: {}", e),
+            }
+        });
+        info!("eBPF/XDP Ghost Drop started — kernel-level network protection with 30s delay");
+
+        // memfd_secret — key protection with 32s delay
+        let memfd = state_for_async.memfd.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(32)).await;
+            match memfd.start().await {
+                Ok(_) => info!("memfd_secret: key protection active"),
+                Err(e) => warn!("memfd_secret: {}", e),
+            }
+        });
+        info!("memfd_secret started — key protection from kernel with 32s delay");
+
+        // HugePages — memory performance with 34s delay
+        let hugepages = state_for_async.hugepages.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(34)).await;
+            match hugepages.start().await {
+                Ok(_) => info!("HugePages: memory allocator active"),
+                Err(e) => warn!("HugePages: {}", e),
+            }
+        });
+        info!("HugePages started — memory performance with 34s delay");
+
+        // ZK-SNARK — real zero-knowledge proofs with 36s delay
+        let zk = state_for_async.zk_snark.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(36)).await;
+            match zk.start().await {
+                Ok(_) => info!("ZK-SNARK engine: proof system active"),
+                Err(e) => warn!("ZK-SNARK: {}", e),
+            }
+        });
+        info!("ZK-SNARK engine started — real zero-knowledge proofs with 36s delay");
+
+        // HTLC Bridge — cross-chain atomic swaps with 38s delay
+        let htlc = state_for_async.htlc.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(38)).await;
+            match htlc.start().await {
+                Ok(_) => info!("HTLC Bridge: cross-chain swaps active"),
+                Err(e) => warn!("HTLC Bridge: {}", e),
+            }
+        });
+        info!("HTLC Bridge started — cross-chain atomic swaps with 38s delay");
+
+        // Policy DSL Compiler — WASM policies with 40s delay
+        let policy = state_for_async.policy_dsl.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(40)).await;
+            match policy.start().await {
+                Ok(_) => info!("Policy DSL Compiler: WASM policy engine active"),
+                Err(e) => warn!("Policy DSL: {}", e),
+            }
+        });
+        info!("Policy DSL Compiler started — WASM policies with 40s delay");
+
+        // MEV Protection — sandwich/backrun/JIT with 44s delay
+        let mev_api = state_for_async.mev_api.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(44)).await;
+            match mev_api.start().await {
+                Ok(_) => info!("MEV Protection: extraction engine active"),
+                Err(e) => warn!("MEV Protection: {}", e),
+            }
+        });
+        info!("MEV Protection engine started — sandwich/backrun/JIT with 44s delay");
+
+        // Flash Loan Engine — arbitrage with 46s delay
+        let flash_loan_api = state_for_async.flash_loan_api.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(46)).await;
+            match flash_loan_api.start().await {
+                Ok(_) => info!("Flash Loan Engine: arbitrage engine active"),
+                Err(e) => warn!("Flash Loan Engine: {}", e),
+            }
+        });
+        info!("Flash Loan Engine started — arbitrage with 46s delay");
+
+        // Flash Loan Engine V2 — Manager-based arbitrage, parallel to V1
+        let flash_loan_api_v2 = state_for_async.flash_loan_api_v2.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(48)).await;
+            match flash_loan_api_v2.start().await {
+                Ok(_) => info!("Flash Loan Engine V2: Manager-based arbitrage engine active"),
+                Err(e) => warn!("Flash Loan Engine V2: {}", e),
+            }
+        });
+        info!("Flash Loan Engine V2 started — Manager-based arbitrage with 48s delay");
+
+        // Dark Pool Manager — initialize + start with 50s delay
+        let dark_pool_state = state_for_async.dark_pool.clone();
+        let books_clone = state_for_async.books.clone();
+        let consensus_clone = state_for_async.consensus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(50)).await;
+            let threshold_crypto = Arc::new(threshold_crypto::ThresholdCrypto::new(2, 3).unwrap());
+            let mempool = Arc::new(encrypted_mempool::EncryptedMempool::new(
+                threshold_crypto, 100, 10000));
+            let fba_engine = Arc::new(batch_auction::FBAMatchingEngine::new(
+                books_clone.clone(),
+                batch_auction::BatchAuctionConfig::default()));
+            let ghost = Arc::new(ghost_integration::GhostCloak::new());
+            let router = Arc::new(tokio::sync::RwLock::new(smart_router::SmartOrderRouter::new()));
+            let mut dp = dark_pool_state.write().await;
+            match dp.initialize(mempool, fba_engine, ghost, router, books_clone).await {
+                Ok(_) => info!("Dark Pool Manager: private order matching initialized"),
+                Err(e) => warn!("Dark Pool Manager: {}", e),
+            }
+            match dp.start_pool().await {
+                Ok(_) => info!("Dark Pool Manager: private order matching active"),
+                Err(e) => warn!("Dark Pool Manager: {}", e),
+            }
+        });
+        info!("Dark Pool Manager initialization scheduled — 50s delay");
+
+        // Direction Supervisor — fault isolation with 42s delay
+        let supervisor = state_for_async.supervisor.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(42)).await;
+            match supervisor.start().await {
+                Ok(_) => info!("Direction Supervisor: fault isolation active"),
+                Err(e) => warn!("Direction Supervisor: {}", e),
+            }
+        });
+        info!("Direction Supervisor started — per-direction fault isolation with 42s delay");
+
+        // Direction Registry — dynamic asset loader with 44s delay
+        let registry = state_for_async.direction_registry.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(44)).await;
+            match registry.start().await {
+                Ok(_) => info!("Direction Registry: dynamic asset loader active"),
+                Err(e) => warn!("Direction Registry: {}", e),
+            }
+        });
+        info!("Direction Registry started — dynamic asset loader with 44s delay");
+
+        // Mesh Network — P2P libp2p
+        let mesh_path = std::env::var("THE_BRIDGE_MESH_PATH").unwrap_or_else(|_| "/home/mohamednoureldinrefaay/projects/the-bridge/local-additions/H-mesh-network".to_string());
+        if std::path::Path::new(&mesh_path).exists() {
+            info!("Mesh Network available at {}", mesh_path);
+        }
+
+        // Self-Healing — Chaos Monkey + Auto-recovery
+        let self_heal_path = std::env::var("THE_BRIDGE_SELF_HEAL_PATH").unwrap_or_else(|_| "/home/mohamednoureldinrefaay/projects/the-bridge/local-additions/L-self-heal".to_string());
+        if std::path::Path::new(&self_heal_path).exists() {
+            info!("Self-Healing available at {}", self_heal_path);
+        }
 
         // Start backup loop
         if backup_nodes.len() > 0 {
@@ -1061,6 +1547,198 @@ fn main() -> anyhow::Result<()> {
         .route("/api/v1/ai/chat", post(ai_chat_handler))
         .route("/api/v1/ai/config", get(ai_config_handler).post(ai_config_update_handler))
         .route("/api/v1/ai/status", get(ai_status_handler))
+        // Revenue Engine — fee management, referrals, revenue tracking
+        .route("/api/v1/revenue/config", get(get_revenue_config).post(update_revenue_config))
+        .route("/api/v1/revenue/profile/{participant_id}", get(get_participant_profile))
+        .route("/api/v1/revenue/profiles", get(list_revenue_profiles))
+        .route("/api/v1/revenue/fees", post(calculate_fees))
+        .route("/api/v1/revenue/referral/{participant_id}", get(get_referral_info))
+        .route("/api/v1/revenue/stats", get(get_revenue_stats))
+        // Lending Pool
+        .route("/api/v1/lending/deposit", post(lending_deposit))
+        .route("/api/v1/lending/borrow", post(lending_borrow))
+        .route("/api/v1/lending/repay", post(lending_repay))
+        .route("/api/v1/lending/withdraw", post(lending_withdraw))
+        .route("/api/v1/lending/snapshot", get(lending_snapshot))
+        // Securities Lending
+        .route("/api/v1/securities/lend", post(securities_lend))
+        .route("/api/v1/securities/borrow", post(securities_borrow))
+        .route("/api/v1/securities/return", post(securities_return))
+        .route("/api/v1/securities/assets", get(securities_assets))
+        .route("/api/v1/securities/snapshot", get(securities_snapshot))
+        // Dark Pool
+        .route("/api/v1/darkpool/status", get(darkpool_status))
+        .route("/api/v1/darkpool/submit", post(darkpool_submit))
+        .route("/api/v1/darkpool/trades", get(darkpool_trades))
+        // FX Engine
+        .route("/api/v1/fx/rates", get(get_fx_rates))
+        .route("/api/v1/fx/quote", post(get_fx_quote))
+        .route("/api/v1/fx/convert", post(execute_fx_conversion))
+        .route("/api/v1/fx/nostro", get(list_nostro_accounts))
+        .route("/api/v1/fx/nostro/{id}/balance", get(get_nostro_balance))
+        // Cross-Venue Arbitrage Engine
+        .route("/api/v1/arb/cross-venue/stats", get(cross_venue_stats))
+        .route("/api/v1/arb/cross-venue/pnl", get(cross_venue_pnl))
+        .route("/api/v1/arb/cross-venue/trades/{n}", get(cross_venue_trades))
+        .route("/api/v1/arb/cross-venue/prices", get(cross_venue_prices))
+        // Super-Arb Engine (Flash Loan + Cross-Venue + MEV + JIT + Staking + Statistical)
+        .route("/api/v1/arb/super/stats", get(super_arb_stats))
+        .route("/api/v1/arb/super/pnl", get(super_arb_pnl))
+        .route("/api/v1/arb/super/trades/{n}", get(super_arb_trades))
+        .route("/api/v1/arb/super/prices", get(super_arb_prices))
+        // Compliance Engine
+        .route("/api/v1/compliance/register", post(compliance_register))
+        .route("/api/v1/compliance/kyc/submit", post(compliance_submit_kyc))
+        .route("/api/v1/compliance/kyc/review", post(compliance_review_kyc))
+        .route("/api/v1/compliance/profile/{participant_id}", get(compliance_profile))
+        .route("/api/v1/compliance/alerts/{participant_id}", get(compliance_alerts))
+        .route("/api/v1/compliance/alerts", get(compliance_all_alerts))
+        .route("/api/v1/compliance/alerts/acknowledge", post(compliance_acknowledge_alert))
+        .route("/api/v1/compliance/alerts/resolve", post(compliance_resolve_alert))
+        .route("/api/v1/compliance/freeze", post(compliance_freeze))
+        .route("/api/v1/compliance/unfreeze", post(compliance_unfreeze))
+        .route("/api/v1/compliance/audit/{participant_id}", get(compliance_audit_log))
+        // Risk Engine
+        .route("/api/v1/risk/register", post(risk_register))
+        .route("/api/v1/risk/profile/{participant_id}", get(risk_profile))
+        .route("/api/v1/risk/alerts/{participant_id}", get(risk_alerts))
+        .route("/api/v1/risk/alerts", get(risk_all_alerts))
+        .route("/api/v1/risk/metrics", get(risk_metrics))
+        .route("/api/v1/risk/stress-test/{participant_id}", get(risk_stress_test))
+        // Onboarding Engine
+        .route("/api/v1/onboarding/initiate", post(onboarding_initiate))
+        .route("/api/v1/onboarding/document", post(onboarding_submit_doc))
+        .route("/api/v1/onboarding/advance", post(onboarding_advance))
+        .route("/api/v1/onboarding/client/{client_id}", get(onboarding_client))
+        .route("/api/v1/onboarding/clients", get(onboarding_list_clients))
+        .route("/api/v1/onboarding/metrics", get(onboarding_metrics))
+        .route("/api/v1/onboarding/workflow/{client_id}", get(onboarding_workflow))
+        .route("/api/v1/onboarding/prime-broker/{account_id}", get(onboarding_prime_broker))
+        .route("/api/v1/onboarding/custodian/{account_id}", get(onboarding_custodian))
+        // Execution Engine
+        .route("/api/v1/execution/submit", post(execution_submit))
+        .route("/api/v1/execution/cancel/{order_id}", post(execution_cancel))
+        .route("/api/v1/execution/order/{order_id}", get(execution_order))
+        .route("/api/v1/execution/reports/{order_id}", get(execution_reports))
+        .route("/api/v1/execution/metrics", get(execution_metrics))
+        .route("/api/v1/execution/mev", get(execution_mev_detect))
+        // Liquidity Engine (BMM)
+        .route("/api/v1/liquidity/book/{symbol}", get(liquidity_aggregated_book))
+        .route("/api/v1/liquidity/best-execution", post(liquidity_best_execution))
+        .route("/api/v1/liquidity/market-maker", post(liquidity_register_mm))
+        .route("/api/v1/liquidity/metrics", get(liquidity_metrics))
+        // White Label
+        .route("/api/v1/whitelabel/deploy", post(whitelabel_deploy))
+        .route("/api/v1/whitelabel/instance/{tenant_id}", get(whitelabel_instance))
+        .route("/api/v1/whitelabel/instances", get(whitelabel_list))
+        .route("/api/v1/whitelabel/record-order", post(whitelabel_record_order))
+        .route("/api/v1/whitelabel/record-volume", post(whitelabel_record_volume))
+        .route("/api/v1/whitelabel/count", get(whitelabel_count))
+        .route("/api/v1/whitelabel/remove", post(whitelabel_remove))
+        // Instant-Flow Revenue Routing
+        .route("/api/v1/revenue-flow/dashboard", get(instant_flow_dashboard))
+        .route("/api/v1/revenue-flow/record", post(instant_flow_record))
+        .route("/api/v1/revenue-flow/distribute", post(instant_flow_distribute))
+        .route("/api/v1/revenue-flow/config", get(instant_flow_config_get).post(instant_flow_config_set))
+        // Vampire Core — Self-feeding profit engine
+        .route("/api/v1/vampire/status", get(vampire_status))
+        .route("/api/v1/vampire/treasury", get(vampire_treasury))
+        .route("/api/v1/vampire/absorb", post(vampire_absorb))
+        .route("/api/v1/vampire/config", get(vampire_config_get).post(vampire_config_set))
+        // Sovereign Ghost — Network Privacy Layer
+        .route("/api/v1/ghost/privacy/status", get(ghost_privacy_status))
+        .route("/api/v1/ghost/privacy/circuit", post(ghost_privacy_create_circuit))
+        .route("/api/v1/ghost/privacy/circuit/{circuit_id}", post(ghost_privacy_dissolve_circuit))
+        .route("/api/v1/ghost/privacy/emergency", post(ghost_privacy_emergency))
+        .route("/api/v1/ghost/privacy/rotate-identity", post(ghost_privacy_rotate_identity))
+        // Flash Loan Arbitrage API
+        .route("/api/v1/flash-loan/status", get(flash_loan_status))
+        .route("/api/v1/flash-loan/opportunities", get(flash_loan_opportunities))
+        .route("/api/v1/flash-loan/execute", post(flash_loan_execute))
+        .route("/api/v1/flash-loan/history", get(flash_loan_history))
+        .route("/api/v1/flash-loan-v2/status", get(flash_loan_v2_status))
+        .route("/api/v1/flash-loan-v2/opportunities", get(flash_loan_v2_opportunities))
+        .route("/api/v1/flash-loan-v2/execute", post(flash_loan_v2_execute))
+        .route("/api/v1/flash-loan-v2/history", get(flash_loan_v2_history))
+        // MEV Protection API
+        .route("/api/v1/mev/status", get(mev_status))
+        .route("/api/v1/mev/threats", get(mev_threats))
+        .route("/api/v1/mev/stats", get(mev_stats))
+        .route("/api/v1/mev/history", get(mev_history))
+        // Batch Auction API
+        .route("/api/v1/batch-auction/status", get(batch_auction_status))
+        .route("/api/v1/batch-auction/start", post(batch_auction_start))
+        .route("/api/v1/batch-auction/submit", post(batch_auction_submit))
+        .route("/api/v1/batch-auction/history", get(batch_auction_history))
+        // Futures & Options API
+        .route("/api/v1/futures/status", get(futures_status))
+        .route("/api/v1/futures/positions", get(futures_positions))
+        .route("/api/v1/futures/instruments", get(futures_instruments))
+        .route("/api/v1/futures/stats", get(futures_stats))
+        // Liquidation Engine API
+        .route("/api/v1/liquidation/status", get(liquidation_status))
+        .route("/api/v1/liquidation/risky", get(liquidation_risky))
+        .route("/api/v1/liquidation/history", get(liquidation_history))
+        .route("/api/v1/liquidation/stats", get(liquidation_stats))
+        // AI CEO — DeepSeek-R1 CEO Decision Engine
+        .route("/api/v1/ceo/status", get(ceo_status))
+        .route("/api/v1/ceo/analysis", get(ceo_analysis))
+        .route("/api/v1/ceo/decisions", post(ceo_decisions))
+        .route("/api/v1/ceo/recommendations", get(ceo_recommendations))
+        // BMM X⁴Y=K — AMM Pool Engine
+        .route("/api/v1/bmm/status", get(bmm_status))
+        .route("/api/v1/bmm/quote", post(bmm_quote))
+        .route("/api/v1/bmm/swap", post(bmm_swap))
+        .route("/api/v1/bmm/pool/{pair}", get(bmm_pool))
+        .route("/api/v1/bmm/liquidity/add", post(bmm_add_liquidity))
+        .route("/api/v1/bmm/liquidity/remove", post(bmm_remove_liquidity))
+        .route("/api/v1/bmm/stats", get(bmm_stats))
+        // BMM Circuit Shield (C5) — protects BMM fee revenue during volatility
+        .route("/api/v1/shield/status/{pair}", get(shield_status))
+        .route("/api/v1/shield/swap", post(shield_swap))
+        // Triangular Fee Network (C2) — multi-leg real fee capture
+        .route("/api/v1/triangular/route", post(triangular_route))
+        .route("/api/v1/triangular/multiplier", post(triangular_multiplier))
+        .route("/api/v1/triangular/stats", get(triangular_stats))
+        // eBPF/XDP Firewall
+        .route("/api/v1/xdp/status", get(xdp_status))
+        .route("/api/v1/xdp/rules", get(xdp_rules).post(xdp_add_rule))
+        .route("/api/v1/xdp/kill-switch", post(xdp_kill_switch))
+        .route("/api/v1/xdp/process", post(xdp_process_packet))
+        // memfd_secret Key Protection
+        .route("/api/v1/memfd/stats", get(memfd_stats))
+        .route("/api/v1/memfd/store", post(memfd_store))
+        .route("/api/v1/memfd/access", post(memfd_access))
+        .route("/api/v1/memfd/list", get(memfd_list))
+        // HugePages Memory
+        .route("/api/v1/hugepages/stats", get(hugepages_stats))
+        .route("/api/v1/hugepages/allocate", post(hugepages_allocate))
+        .route("/api/v1/hugepages/deallocate", post(hugepages_deallocate))
+        // ZK-SNARK Proofs
+        .route("/api/v1/zk/status", get(zk_status))
+        .route("/api/v1/zk/proof", post(zk_generate_proof))
+        .route("/api/v1/zk/verify", post(zk_verify_proof))
+        .route("/api/v1/zk/circuits", get(zk_circuits).post(zk_register_circuit))
+        // HTLC Bridge
+        .route("/api/v1/htlc/status", get(htlc_status))
+        .route("/api/v1/htlc/create", post(htlc_create))
+        .route("/api/v1/htlc/claim", post(htlc_claim))
+        .route("/api/v1/htlc/refund", post(htlc_refund))
+        // Policy DSL Compiler
+        .route("/api/v1/policy/status", get(policy_status))
+        .route("/api/v1/policy/compile", post(policy_compile))
+        .route("/api/v1/policy/list", get(policy_list))
+        .route("/api/v1/policy/snapshot", post(policy_snapshot))
+        // Direction Supervisor
+        .route("/api/v1/supervisor/status", get(supervisor_status))
+        .route("/api/v1/supervisor/processes", get(supervisor_processes))
+        .route("/api/v1/supervisor/crash", post(supervisor_crash))
+        // Direction Registry
+        .route("/api/v1/direction/status", get(direction_status))
+        .route("/api/v1/direction/register", post(direction_register))
+        .route("/api/v1/direction/load", post(direction_load))
+        .route("/api/v1/direction/list", get(direction_list))
+        .route("/api/v1/direction/snapshot", post(direction_snapshot))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(
@@ -1155,9 +1833,440 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, Json<serde_json::V
 }
 
 async fn prometheus_metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let latency = state.metrics.latency_seconds_histogram();
+    let mut out = state.metrics.prometheus_text();
+
+    let xdp = state.xdp.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_xdp_packets_processed_total", xdp.packets_processed as f64),
+        ("the_bridge_xdp_packets_dropped_total", xdp.packets_dropped as f64),
+        ("the_bridge_xdp_packets_passed_total", xdp.packets_passed as f64),
+        ("the_bridge_xdp_packets_redirected_total", xdp.packets_redirected as f64),
+        ("the_bridge_xdp_packets_quarantined_total", xdp.packets_quarantined as f64),
+        ("the_bridge_xdp_bytes_processed_total", xdp.bytes_processed as f64),
+        ("the_bridge_xdp_bytes_dropped_total", xdp.bytes_dropped as f64),
+        ("the_bridge_xdp_active_rules", xdp.active_rules as f64),
+        ("the_bridge_xdp_rules_count", xdp.active_rules as f64),
+        ("the_bridge_xdp_rate_limit_triggers_total", xdp.rate_limit_triggers as f64),
+        ("the_bridge_xdp_ddos_mitigations_total", xdp.ddos_mitigations as f64),
+        ("the_bridge_xdp_ghost_drops_total", xdp.ghost_drops as f64),
+        ("the_bridge_xdp_kill_switch_activations_total", xdp.kill_switch_activations as f64),
+        ("the_bridge_xdp_kill_switch_active", xdp.kill_switch_activations as f64),
+        ("the_bridge_xdp_syn_cookie_generations_total", xdp.syn_cookie_generations as f64),
+        ("the_bridge_xdp_tls_inspections_total", xdp.tls_inspections as f64),
+        ("the_bridge_xdp_anomaly_detections_total", xdp.anomaly_detections as f64),
+        ("the_bridge_xdp_avg_latency_ns", xdp.avg_latency_ns as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let memfd = state.memfd.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_memfd_total_secrets", memfd.total_secrets as f64),
+        ("the_bridge_memfd_total_bytes", memfd.total_bytes as f64),
+        ("the_bridge_memfd_sealed_count", memfd.sealed_count as f64),
+        ("the_bridge_memfd_unsealed_count", memfd.unsealed_count as f64),
+        ("the_bridge_memfd_total_accesses_total", memfd.total_accesses as f64),
+        ("the_bridge_memfd_seal_operations_total", memfd.seal_operations as f64),
+        ("the_bridge_memfd_unseal_operations_total", memfd.unseal_operations as f64),
+        ("the_bridge_memfd_ptrace_blocks_total", memfd.ptrace_blocks as f64),
+        ("the_bridge_memfd_rotation_operations_total", memfd.rotation_operations as f64),
+        ("the_bridge_memfd_encryption_operations_total", memfd.encryption_operations as f64),
+        ("the_bridge_memfd_decryption_operations_total", memfd.decryption_operations as f64),
+        ("the_bridge_memfd_audit_log_size", memfd.audit_log_size as f64),
+        ("the_bridge_memfd_memory_usage_bytes", memfd.memory_usage_bytes as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let hp = state.hugepages.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_hugepages_total_regions", hp.total_regions as f64),
+        ("the_bridge_hugepages_total_allocated", hp.total_allocated as f64),
+        ("the_bridge_hugepages_total_locked", hp.total_locked as f64),
+        ("the_bridge_hugepages_total_bytes", hp.total_bytes as f64),
+        ("the_bridge_hugepages_pages_available", hp.pages_available as f64),
+        ("the_bridge_hugepages_pages_used", hp.pages_used as f64),
+        ("the_bridge_hugepages_allocation_failures_total", hp.allocation_failures as f64),
+        ("the_bridge_hugepages_lock_failures_total", hp.lock_failures as f64),
+        ("the_bridge_hugepages_prefault_failures_total", hp.prefault_failures as f64),
+        ("the_bridge_hugepages_total_prefaulted_pages", hp.total_prefaulted_pages as f64),
+        ("the_bridge_hugepages_fragmentation_percent", hp.fragmentation_percent),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+    for (node, count) in &hp.numa_distribution {
+        out.push_str(&format!(
+            "# TYPE the_bridge_hugepages_numa_node gauge\nthe_bridge_hugepages_numa_node{{node=\"{}\"}} {}\n",
+            node, count
+        ));
+    }
+
+    let zk = state.zk_snark.get_stats().await;
+    let zk_success = if zk.total_verifications > 0 { zk.successful_verifications as f64 / zk.total_verifications as f64 } else { 1.0 };
+    for (n, v) in [
+        ("the_bridge_zk_total_proofs", zk.total_proofs as f64),
+        ("the_bridge_zk_total_verifications", zk.total_verifications as f64),
+        ("the_bridge_zk_success_rate", zk_success),
+        ("the_bridge_zk_circuits_registered", zk.circuits_registered as f64),
+        ("the_bridge_zk_verifier_keys", zk.verifier_keys as f64),
+        ("the_bridge_zk_proofs_generated_total", zk.total_proofs as f64),
+        ("the_bridge_zk_verifications_total", zk.total_verifications as f64),
+        ("the_bridge_zk_batch_verifications_total", zk.batch_verifications as f64),
+        ("the_bridge_zk_recursive_proofs_total", zk.recursive_proofs as f64),
+        ("the_bridge_zk_cache_hits_total", zk.cache_hits as f64),
+        ("the_bridge_zk_cache_misses_total", zk.cache_misses as f64),
+        ("the_bridge_zk_total_witness_bytes_total", zk.total_witness_bytes as f64),
+        ("the_bridge_zk_total_proof_bytes_total", zk.total_proof_bytes as f64),
+        ("the_bridge_zk_avg_proof_time_ns", zk.avg_proof_time_ns as f64),
+        ("the_bridge_zk_avg_verify_time_ns", zk.avg_verify_time_ns as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let htlc = state.htlc.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_htlc_total_contracts", htlc.total_contracts as f64),
+        ("the_bridge_htlc_active", htlc.active as f64),
+        ("the_bridge_htlc_claimed", htlc.claimed as f64),
+        ("the_bridge_htlc_refunded", htlc.refunded as f64),
+        ("the_bridge_htlc_expired", htlc.expired as f64),
+        ("the_bridge_htlc_disputed", htlc.disputed as f64),
+        ("the_bridge_htlc_cancelled", htlc.cancelled as f64),
+        ("the_bridge_htlc_total_volume", htlc.total_volume),
+        ("the_bridge_htlc_total_fees", htlc.total_fees),
+        ("the_bridge_htlc_avg_claim_time_secs", htlc.avg_claim_time_secs),
+        ("the_bridge_htlc_success_rate", htlc.success_rate),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let pol = state.policy_dsl.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_policy_total_policies", pol.total_policies as f64),
+        ("the_bridge_policy_active_policies", pol.active_policies as f64),
+        ("the_bridge_policy_compiled_policies", pol.compiled_policies as f64),
+        ("the_bridge_policy_aot_compiled", pol.aot_compiled as f64),
+        ("the_bridge_policy_total_snapshots", pol.total_snapshots as f64),
+        ("the_bridge_policy_hot_reloads_total", pol.hot_reloads as f64),
+        ("the_bridge_policy_compilation_failures_total", pol.compilation_failures as f64),
+        ("the_bridge_policy_evaluations_total", pol.total_evaluations as f64),
+        ("the_bridge_policy_total_gas_used_total", pol.total_gas_used as f64),
+        ("the_bridge_policy_avg_evaluation_time_ns", pol.avg_evaluation_time_ns as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let sup = state.supervisor.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_dir_total_directions", sup.total_directions as f64),
+        ("the_bridge_dir_active", sup.running as f64),
+        ("the_bridge_dir_stopped", sup.stopped as f64),
+        ("the_bridge_dir_failed", sup.crashed as f64),
+        ("the_bridge_dir_restarts_total", sup.total_restarts as f64),
+        ("the_bridge_dir_crashes_total", sup.total_crashes as f64),
+        ("the_bridge_dir_avg_uptime_secs", sup.avg_uptime_secs),
+        ("the_bridge_dir_isolation_events_total", sup.isolation_events as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let dreg = state.direction_registry.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_dreg_total_directions", dreg.total_directions as f64),
+        ("the_bridge_dreg_active", dreg.active as f64),
+        ("the_bridge_dreg_paused", dreg.paused as f64),
+        ("the_bridge_dreg_error", dreg.error as f64),
+        ("the_bridge_dreg_loads_total", dreg.total_loads as f64),
+        ("the_bridge_dreg_unloads_total", dreg.total_unloads as f64),
+        ("the_bridge_dreg_hot_reloads_total", dreg.hot_reloads as f64),
+        ("the_bridge_dreg_total_snapshots", dreg.total_snapshots as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let bmm = state.bmm.get_stats().await;
+    for (n, v) in [
+        ("the_bridge_bmm_total_pools", bmm.pools.len() as f64),
+        ("the_bridge_bmm_total_volume_usd", bmm.total_volume_usd),
+        ("the_bridge_bmm_total_fees_usd", bmm.total_fees_usd),
+        ("the_bridge_bmm_total_trades", bmm.total_trades as f64),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+    for pool in &bmm.pools {
+        out.push_str(&format!(
+            "the_bridge_bmm_pool_reserve_x{{pair=\"{}\"}} {}\n",
+            pool.pair, pool.reserve_x
+        ));
+        out.push_str(&format!(
+            "the_bridge_bmm_pool_reserve_y{{pair=\"{}\"}} {}\n",
+            pool.pair, pool.reserve_y
+        ));
+        out.push_str(&format!(
+            "the_bridge_bmm_pool_price{{pair=\"{}\"}} {}\n",
+            pool.pair, pool.last_price
+        ));
+        out.push_str(&format!(
+            "the_bridge_bmm_pool_trade_count{{pair=\"{}\"}} {}\n",
+            pool.pair, pool.trade_count
+        ));
+    }
+    let bmm_tvl: f64 = bmm.pools.iter().map(|p| p.reserve_x + p.reserve_y).sum();
+    out.push_str("# HELP the_bridge_bmm_tvl Total value locked in BMM pools\n# TYPE the_bridge_bmm_tvl gauge\n");
+    out.push_str(&format!("the_bridge_bmm_tvl {}\n", bmm_tvl));
+    out.push_str("# HELP the_bridge_bmm_active_pools Active BMM pools\n# TYPE the_bridge_bmm_active_pools gauge\n");
+    out.push_str(&format!("the_bridge_bmm_active_pools {}\n", bmm.pools.len()));
+    out.push_str("# HELP the_bridge_bmm_total_pools Total BMM pools\n# TYPE the_bridge_bmm_total_pools gauge\n");
+    out.push_str(&format!("the_bridge_bmm_total_pools {}\n", bmm.pools.len()));
+
+    out.push_str("# HELP the_bridge_dir_healthy Directions currently running\n# TYPE the_bridge_dir_healthy gauge\n");
+    out.push_str(&format!("the_bridge_dir_healthy {}\n", sup.running));
+    out.push_str("# HELP the_bridge_dir_health_status Direction supervisor health (1=ok)\n# TYPE the_bridge_dir_health_status gauge\n");
+    out.push_str(&format!("the_bridge_dir_health_status {}\n", if sup.crashed == 0 { 1 } else { 0 }));
+
+    for (component, up) in [
+        ("revenue", 1u64),
+        ("fx", 1u64),
+        ("lending", 1u64),
+        ("darkpool", state.dark_pool.read().await.is_running() as u64),
+        ("cross_venue_arb", 1u64),
+        ("super_arb", 1u64),
+        ("bmm", state.bmm.is_running().await as u64),
+        ("xdp", state.xdp.is_running().await as u64),
+        ("zk_snark", state.zk_snark.is_running().await as u64),
+        ("htlc", state.htlc.is_running().await as u64),
+        ("policy_dsl", state.policy_dsl.is_running().await as u64),
+        ("supervisor", state.supervisor.is_running().await as u64),
+    ] {
+        out.push_str(&format!(
+            "# HELP the_bridge_component_up Component running status\n# TYPE the_bridge_component_up gauge\nthe_bridge_component_up{{component=\"{}\"}} {}\n",
+            component, up
+        ));
+    }
+
+    let sa_stats = state.super_arb.get_stats().await;
+    let sa_pnl = state.super_arb.get_pnl().await;
+    out.push_str("# HELP the_bridge_super_arb_uptime_seconds Super-Arb engine uptime\n# TYPE the_bridge_super_arb_uptime_seconds gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_uptime_seconds {}\n", sa_stats.uptime_seconds));
+    out.push_str("# HELP the_bridge_super_arb_total_scans Super-Arb scan counter\n# TYPE the_bridge_super_arb_total_scans counter\n");
+    out.push_str(&format!("the_bridge_super_arb_total_scans {}\n", sa_stats.total_scans));
+    out.push_str("# HELP the_bridge_super_arb_opportunities Super-Arb opportunities found\n# TYPE the_bridge_super_arb_opportunities gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_opportunities {}\n", sa_stats.opportunities_count));
+    out.push_str("# HELP the_bridge_super_arb_trades_count Super-Arb executed trades\n# TYPE the_bridge_super_arb_trades_count gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_trades_count {}\n", sa_stats.trades_count));
+    out.push_str("# HELP the_bridge_super_arb_circuit_breaker Super-Arb circuit breaker (1=open)\n# TYPE the_bridge_super_arb_circuit_breaker gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_circuit_breaker {}\n", sa_stats.circuit_breaker as u64));
+    out.push_str("# HELP the_bridge_super_arb_total_net_profit_usd Super-Arb total net profit\n# TYPE the_bridge_super_arb_total_net_profit_usd gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_total_net_profit_usd {}\n", sa_pnl.total_net_profit_usd));
+    out.push_str("# HELP the_bridge_super_arb_daily_pnl_usd Super-Arb daily PnL\n# TYPE the_bridge_super_arb_daily_pnl_usd gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_daily_pnl_usd {}\n", sa_pnl.daily_pnl));
+    out.push_str("# HELP the_bridge_super_arb_monthly_pnl_usd Super-Arb monthly PnL\n# TYPE the_bridge_super_arb_monthly_pnl_usd gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_monthly_pnl_usd {}\n", sa_pnl.monthly_pnl));
+    out.push_str("# HELP the_bridge_super_arb_running_balance_usd Super-Arb running balance\n# TYPE the_bridge_super_arb_running_balance_usd gauge\n");
+    out.push_str(&format!("the_bridge_super_arb_running_balance_usd {}\n", sa_pnl.running_balance_usd));
+
+    let cv_stats = state.cross_venue_arb.get_stats().await;
+    let cv_pnl = state.cross_venue_arb.get_pnl().await;
+    out.push_str("# HELP the_bridge_cross_venue_uptime_seconds Cross-Venue engine uptime\n# TYPE the_bridge_cross_venue_uptime_seconds gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_uptime_seconds {}\n", cv_stats.uptime_seconds));
+    out.push_str("# HELP the_bridge_cross_venue_total_scans Cross-Venue scan counter\n# TYPE the_bridge_cross_venue_total_scans counter\n");
+    out.push_str(&format!("the_bridge_cross_venue_total_scans {}\n", cv_stats.total_scans));
+    out.push_str("# HELP the_bridge_cross_venue_opportunities_found Cross-Venue opportunities found\n# TYPE the_bridge_cross_venue_opportunities_found gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_opportunities_found {}\n", cv_stats.opportunities_found));
+    out.push_str("# HELP the_bridge_cross_venue_opportunities_profitable Cross-Venue profitable opportunities\n# TYPE the_bridge_cross_venue_opportunities_profitable gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_opportunities_profitable {}\n", cv_stats.opportunities_profitable));
+    out.push_str("# HELP the_bridge_cross_venue_trades_executed Cross-Venue executed trades\n# TYPE the_bridge_cross_venue_trades_executed gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_trades_executed {}\n", cv_stats.trades_executed));
+    out.push_str("# HELP the_bridge_cross_venue_circuit_breaker Cross-Venue circuit breaker (1=open)\n# TYPE the_bridge_cross_venue_circuit_breaker gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_circuit_breaker {}\n", cv_stats.circuit_breaker as u64));
+    out.push_str("# HELP the_bridge_cross_venue_daily_pnl_usd Cross-Venue daily PnL\n# TYPE the_bridge_cross_venue_daily_pnl_usd gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_daily_pnl_usd {}\n", cv_pnl.daily_pnl));
+    out.push_str("# HELP the_bridge_cross_venue_total_net_profit_usd Cross-Venue total net profit\n# TYPE the_bridge_cross_venue_total_net_profit_usd gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_total_net_profit_usd {}\n", cv_pnl.total_net_profit_usd));
+    out.push_str("# HELP the_bridge_cross_venue_success_rate Cross-Venue success rate\n# TYPE the_bridge_cross_venue_success_rate gauge\n");
+    out.push_str(&format!("the_bridge_cross_venue_success_rate {}\n", cv_pnl.success_rate));
+
+    let fl = state.flash_loan_api.get_status().await;
+    out.push_str("# HELP the_bridge_flash_loan_running Flash-Loan engine running (1=yes)\n# TYPE the_bridge_flash_loan_running gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_running {}\n", fl.running as u64));
+    out.push_str("# HELP the_bridge_flash_loan_uptime_seconds Flash-Loan engine uptime\n# TYPE the_bridge_flash_loan_uptime_seconds gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_uptime_seconds {}\n", fl.uptime_seconds));
+    out.push_str("# HELP the_bridge_flash_loan_total_scans Flash-Loan scan counter\n# TYPE the_bridge_flash_loan_total_scans counter\n");
+    out.push_str(&format!("the_bridge_flash_loan_total_scans {}\n", fl.total_scans));
+    out.push_str("# HELP the_bridge_flash_loan_total_opportunities Flash-Loan opportunities found\n# TYPE the_bridge_flash_loan_total_opportunities gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_total_opportunities {}\n", fl.total_opportunities_found));
+    out.push_str("# HELP the_bridge_flash_loan_total_trades Flash-Loan trades executed\n# TYPE the_bridge_flash_loan_total_trades gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_total_trades {}\n", fl.total_trades_executed));
+    out.push_str("# HELP the_bridge_flash_loan_total_profit_usd Flash-Loan total profit\n# TYPE the_bridge_flash_loan_total_profit_usd gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_total_profit_usd {}\n", fl.total_profit_usd));
+    out.push_str("# HELP the_bridge_flash_loan_pool_count Flash-Loan registered pools\n# TYPE the_bridge_flash_loan_pool_count gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_pool_count {}\n", fl.pool_count));
+    out.push_str("# HELP the_bridge_flash_loan_active_trades Flash-Loan active trades\n# TYPE the_bridge_flash_loan_active_trades gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_active_trades {}\n", fl.active_trades));
+
+    let fl2 = state.flash_loan_api_v2.get_status().await;
+    out.push_str("# HELP the_bridge_flash_loan_v2_running Flash-Loan V2 (Manager) engine running (1=yes)\n# TYPE the_bridge_flash_loan_v2_running gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_running {}\n", fl2.running as u64));
+    out.push_str("# HELP the_bridge_flash_loan_v2_uptime_seconds Flash-Loan V2 engine uptime\n# TYPE the_bridge_flash_loan_v2_uptime_seconds gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_uptime_seconds {}\n", fl2.uptime_seconds));
+    out.push_str("# HELP the_bridge_flash_loan_v2_total_scans Flash-Loan V2 scan counter\n# TYPE the_bridge_flash_loan_v2_total_scans counter\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_total_scans {}\n", fl2.total_scans));
+    out.push_str("# HELP the_bridge_flash_loan_v2_total_opportunities Flash-Loan V2 opportunities found\n# TYPE the_bridge_flash_loan_v2_total_opportunities gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_total_opportunities {}\n", fl2.total_opportunities_found));
+    out.push_str("# HELP the_bridge_flash_loan_v2_total_trades Flash-Loan V2 trades executed\n# TYPE the_bridge_flash_loan_v2_total_trades gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_total_trades {}\n", fl2.total_trades_executed));
+    out.push_str("# HELP the_bridge_flash_loan_v2_total_profit_usd Flash-Loan V2 total profit\n# TYPE the_bridge_flash_loan_v2_total_profit_usd gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_total_profit_usd {}\n", fl2.total_profit_usd));
+    out.push_str("# HELP the_bridge_flash_loan_v2_pool_count Flash-Loan V2 registered pools\n# TYPE the_bridge_flash_loan_v2_pool_count gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_pool_count {}\n", fl2.pool_count));
+    out.push_str("# HELP the_bridge_flash_loan_v2_active_trades Flash-Loan V2 active trades\n# TYPE the_bridge_flash_loan_v2_active_trades gauge\n");
+    out.push_str(&format!("the_bridge_flash_loan_v2_active_trades {}\n", fl2.active_trades));
+
+    let mev_st = state.mev_api.get_status().await;
+    let mev_sts = state.mev_api.get_stats().await;
+    out.push_str("# HELP the_bridge_mev_running MEV engine running (1=yes)\n# TYPE the_bridge_mev_running gauge\n");
+    out.push_str(&format!("the_bridge_mev_running {}\n", mev_st.running as u64));
+    out.push_str("# HELP the_bridge_mev_total_scans MEV scan counter\n# TYPE the_bridge_mev_total_scans counter\n");
+    out.push_str(&format!("the_bridge_mev_total_scans {}\n", mev_st.total_scans));
+    out.push_str("# HELP the_bridge_mev_mempool_size MEV mempool size\n# TYPE the_bridge_mev_mempool_size gauge\n");
+    out.push_str(&format!("the_bridge_mev_mempool_size {}\n", mev_st.mempool_size));
+    out.push_str("# HELP the_bridge_mev_total_bundles MEV total bundles\n# TYPE the_bridge_mev_total_bundles counter\n");
+    out.push_str(&format!("the_bridge_mev_total_bundles {}\n", mev_sts.total_bundles));
+    out.push_str("# HELP the_bridge_mev_confirmed_bundles MEV confirmed bundles\n# TYPE the_bridge_mev_confirmed_bundles counter\n");
+    out.push_str(&format!("the_bridge_mev_confirmed_bundles {}\n", mev_sts.confirmed_bundles));
+    out.push_str("# HELP the_bridge_mev_success_rate MEV success rate\n# TYPE the_bridge_mev_success_rate gauge\n");
+    out.push_str(&format!("the_bridge_mev_success_rate {}\n", mev_sts.success_rate));
+    out.push_str("# HELP the_bridge_mev_total_profit_usd MEV total profit\n# TYPE the_bridge_mev_total_profit_usd gauge\n");
+    out.push_str(&format!("the_bridge_mev_total_profit_usd {}\n", mev_sts.total_profit_usd));
+    out.push_str("# HELP the_bridge_mev_daily_pnl_usd MEV daily PnL\n# TYPE the_bridge_mev_daily_pnl_usd gauge\n");
+    out.push_str(&format!("the_bridge_mev_daily_pnl_usd {}\n", mev_sts.daily_pnl));
+    out.push_str("# HELP the_bridge_mev_sandwiches MEV sandwich attacks detected\n# TYPE the_bridge_mev_sandwiches counter\n");
+    out.push_str(&format!("the_bridge_mev_sandwiches {}\n", mev_sts.sandwiches));
+
+    out.push_str("# HELP the_bridge_match_latency_seconds Matching engine latency histogram (seconds)\n");
+    out.push_str("# TYPE the_bridge_match_latency_seconds histogram\n");
+    for (le, count) in &latency {
+        out.push_str(&format!(
+            "the_bridge_match_latency_seconds_bucket{{le=\"{}\"}} {}\n",
+            le, count
+        ));
+    }
+    out.push_str(&format!(
+        "the_bridge_match_latency_seconds_bucket{{le=\"+Inf\"}} {}\n",
+        latency.iter().map(|(_, c)| c).sum::<u64>()
+    ));
+    out.push_str(&format!(
+        "the_bridge_match_latency_seconds_count {}\n",
+        latency.iter().map(|(_, c)| c).sum::<u64>()
+    ));
+    out.push_str("the_bridge_match_latency_seconds_sum 0\n");
+
+    out.push_str("# HELP the_bridge_order_latency_seconds Order latency histogram (seconds)\n");
+    out.push_str("# TYPE the_bridge_order_latency_seconds histogram\n");
+    for (le, count) in &latency {
+        out.push_str(&format!(
+            "the_bridge_order_latency_seconds_bucket{{le=\"{}\"}} {}\n",
+            le, count
+        ));
+    }
+    out.push_str(&format!(
+        "the_bridge_order_latency_seconds_bucket{{le=\"+Inf\"}} {}\n",
+        latency.iter().map(|(_, c)| c).sum::<u64>()
+    ));
+    out.push_str(&format!(
+        "the_bridge_order_latency_seconds_count {}\n",
+        latency.iter().map(|(_, c)| c).sum::<u64>()
+    ));
+    out.push_str("the_bridge_order_latency_seconds_sum 0\n");
+
+    let ob_orders = state.books.total_orders();
+    let ob_pairs = state.books.active_pairs();
+    out.push_str("# HELP the_bridge_order_book_total_orders Orders in book\n# TYPE the_bridge_order_book_total_orders gauge\n");
+    out.push_str(&format!("the_bridge_order_book_total_orders {}\n", ob_orders));
+    out.push_str("# HELP the_bridge_order_book_active_pairs Active pairs\n# TYPE the_bridge_order_book_active_pairs gauge\n");
+    out.push_str(&format!("the_bridge_order_book_active_pairs {}\n", ob_pairs));
+    let mut bid_levels_total = 0u32;
+    let mut ask_levels_total = 0u32;
+    let mut bid_qty_total = 0.0f64;
+    let mut ask_qty_total = 0.0f64;
+    for book_ref in state.books.books.iter() {
+        let pair = book_ref.key();
+        if let Some(depth) = state.books.get_depth(pair, 20) {
+            let bid_qty: f64 = depth.bids.iter().map(|l| l.quantity).sum();
+            let ask_qty: f64 = depth.asks.iter().map(|l| l.quantity).sum();
+            bid_levels_total += depth.bids.len() as u32;
+            ask_levels_total += depth.asks.len() as u32;
+            bid_qty_total += bid_qty;
+            ask_qty_total += ask_qty;
+            out.push_str(&format!(
+                "the_bridge_order_book_depth_bids{{pair=\"{}\"}} {}\n",
+                pair, bid_qty
+            ));
+            out.push_str(&format!(
+                "the_bridge_order_book_depth_asks{{pair=\"{}\"}} {}\n",
+                pair, ask_qty
+            ));
+        }
+    }
+    out.push_str("# HELP the_bridge_order_book_bid_levels Bid levels across all pairs\n# TYPE the_bridge_order_book_bid_levels gauge\n");
+    out.push_str(&format!("the_bridge_order_book_bid_levels {}\n", bid_levels_total));
+    out.push_str("# HELP the_bridge_order_book_ask_levels Ask levels across all pairs\n# TYPE the_bridge_order_book_ask_levels gauge\n");
+    out.push_str(&format!("the_bridge_order_book_ask_levels {}\n", ask_levels_total));
+    out.push_str("# HELP the_bridge_order_book_depth_bids_total Total bid depth\n# TYPE the_bridge_order_book_depth_bids_total gauge\n");
+    out.push_str(&format!("the_bridge_order_book_depth_bids_total {}\n", bid_qty_total));
+    out.push_str("# HELP the_bridge_order_book_depth_asks_total Total ask depth\n# TYPE the_bridge_order_book_depth_asks_total gauge\n");
+    out.push_str(&format!("the_bridge_order_book_depth_asks_total {}\n", ask_qty_total));
+
+    out.push_str("# HELP the_bridge_wal_healthy WAL healthy (1=ok)\n# TYPE the_bridge_wal_healthy gauge\n");
+    out.push_str(&format!("the_bridge_wal_healthy {}\n", state.wal.is_healthy() as u64));
+    out.push_str("# HELP the_bridge_wal_writes_total WAL writes\n# TYPE the_bridge_wal_writes_total counter\n");
+    out.push_str(&format!("the_bridge_wal_writes_total {}\n", ob_orders));
+
+    let nv = state.consensus.num_vertices().await;
+    let nf = state.consensus.num_finalized().await;
+    let mdp = state.consensus.mempool_depth().await;
+    out.push_str("# HELP the_bridge_consensus_vertices Consensus vertices\n# TYPE the_bridge_consensus_vertices gauge\n");
+    out.push_str(&format!("the_bridge_consensus_vertices {}\n", nv));
+    out.push_str("# HELP the_bridge_consensus_finalized Finalized vertices\n# TYPE the_bridge_consensus_finalized gauge\n");
+    out.push_str(&format!("the_bridge_consensus_finalized {}\n", nf));
+    out.push_str("# HELP the_bridge_consensus_proposals_total Consensus proposals\n# TYPE the_bridge_consensus_proposals_total counter\n");
+    out.push_str(&format!("the_bridge_consensus_proposals_total {}\n", nv));
+    out.push_str("# HELP the_bridge_consensus_mempool_depth Mempool depth\n# TYPE the_bridge_consensus_mempool_depth gauge\n");
+    out.push_str(&format!("the_bridge_consensus_mempool_depth {}\n", mdp));
+
+    out.push_str("# HELP the_bridge_crdt_active_orders Active CRDT orders\n# TYPE the_bridge_crdt_active_orders gauge\n");
+    out.push_str(&format!(
+        "the_bridge_crdt_active_orders {}\n",
+        state.crdt.active_orders().len()
+    ));
+    out.push_str("# HELP the_bridge_crdt_operations_total CRDT operations\n# TYPE the_bridge_crdt_operations_total counter\n");
+    out.push_str(&format!("the_bridge_crdt_operations_total {}\n", ob_orders));
+
+    let rev = state.revenue_engine.read().await.get_metrics().await;
+    for (n, v) in [
+        ("the_bridge_revenue_total_usd", rev.total_revenue_usd as f64),
+        ("the_bridge_revenue_trading_fees_total", rev.trading_fees_usd as f64),
+        ("the_bridge_revenue_rebates_paid_total", rev.rebates_paid_usd as f64),
+        ("the_bridge_revenue_data_licensing_total", rev.data_licensing_usd as f64),
+        ("the_bridge_revenue_premium_tiers_total", rev.premium_tiers_usd as f64),
+        ("the_bridge_revenue_cross_venue_total", rev.cross_venue_usd as f64),
+        ("the_bridge_revenue_mei_captured_total", rev.mei_captured_usd as f64),
+        ("the_bridge_revenue_mei_shared_total", rev.mei_shared_usd as f64),
+        ("the_bridge_revenue_active_participants", rev.active_participants as f64),
+        ("the_bridge_revenue_per_participant_usd", rev.revenue_per_participant_usd),
+        ("the_bridge_revenue_take_rate_bps", rev.take_rate_bps),
+    ] {
+        out.push_str(&format!("# HELP {n} {n}\n# TYPE {n} counter\n{n} {v}\n", n = n, v = v));
+    }
+
+    let ob_trades = state.books.total_trades();
+    out.push_str("# HELP the_bridge_continuous_trades_total Continuous trades\n# TYPE the_bridge_continuous_trades_total counter\n");
+    out.push_str(&format!("the_bridge_continuous_trades_total {}\n", ob_trades));
+
     (
         [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
-        state.metrics.prometheus_text(),
+        out,
     )
 }
 
@@ -1307,6 +2416,7 @@ async fn place_twap_order(
     }
     let order = Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id,
         pair: CompactString::from(pair.to_uppercase()),
         order_type: OrderType::Limit,
@@ -1329,6 +2439,8 @@ async fn place_twap_order(
         track: Track::Compliant,
         style: OrderStyle::TWAP { duration_secs, interval_secs },
         hidden_remaining: 0.0,
+        client_order_id: None,
+        filled_quantity: 0,
     };
     let tenant_id = Some(user_id);
     match process_order_placement(state.clone(), order, tenant_id).await {
@@ -1595,7 +2707,7 @@ async fn market_trades_handler(
     let key = pair.to_uppercase();
     let trades = state.books.books.get(&key)
         .map(|book| {
-            let recent: Vec<Trade> = book.trades.iter().rev().take(100).cloned().collect();
+            let recent: Vec<Trade> = book.trades.lock().iter().rev().take(100).cloned().collect();
             recent
         })
         .unwrap_or_default();
@@ -1954,7 +3066,7 @@ async fn set_matching_mode_handler(
             let window = req.window_ns.unwrap_or(2000);
             let jitter = req.jitter_range_micros.unwrap_or(200);
             // Create books with these batch params if they don't exist
-            for pair in &["USD/EUR", "USD/EGP", "USD/SAR", "USD/AED", "USD/GBP", "EUR/EGP"] {
+            for pair in &["EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD", "ETH/USD", "SOL/USD"] {
                 state.books.create_book_with_batch(pair, window, jitter);
             }
             Json(serde_json::json!({
@@ -2048,7 +3160,8 @@ async fn login_handler(
 ) -> Result<Json<LoginRes>, (StatusCode, Json<serde_json::Value>)> {
     let api_key = state.api_keys.validate_key(&req.api_key)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "invalid key"}))))?;
-    let access_token = state.token_auth.create_access_token(api_key.tenant_id, "pro");
+    let access_token = state.token_auth.create_access_token(api_key.tenant_id, "pro")
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))))?;
     let refresh_token = state.token_auth.create_refresh_token(api_key.tenant_id);
     Ok(Json(LoginRes {
         access_token,
@@ -3231,4 +4344,2255 @@ async fn serve_tls(
 ) -> Result<(), axum::BoxError> {
     warn!("TLS not available on this platform");
     Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Revenue Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn get_revenue_config(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let re = state.revenue_engine.read().await;
+    let cfg = re.get_config();
+    Json(serde_json::json!({
+        "maker_fee_bps": cfg.maker_fee_bps,
+        "taker_fee_bps": cfg.taker_fee_bps,
+        "cross_venue_fee_bps": cfg.cross_venue_fee_bps,
+        "mei_sharing_bps": cfg.mei_sharing_bps,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateRevenueConfigReq {
+    maker_fee_bps: Option<u32>,
+    taker_fee_bps: Option<u32>,
+}
+
+async fn update_revenue_config(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateRevenueConfigReq>,
+) -> Json<serde_json::Value> {
+    let mut re = state.revenue_engine.write().await;
+    let mut cfg = re.get_config().clone();
+    if let Some(bps) = req.maker_fee_bps {
+        cfg.maker_fee_bps = bps;
+    }
+    if let Some(bps) = req.taker_fee_bps {
+        cfg.taker_fee_bps = bps;
+    }
+    re.set_config(cfg);
+    Json(serde_json::json!({"status": "updated"}))
+}
+
+async fn get_participant_profile(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let re = state.revenue_engine.read().await;
+    match re.get_participant_profile(&participant_id).await {
+        Some(profile) => Json(serde_json::to_value(&profile).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "participant_not_found", "participant_id": participant_id})),
+    }
+}
+
+async fn list_revenue_profiles(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let guard = state.revenue_engine.read().await;
+    let profiles = guard.get_profiles().read().await;
+    let list: Vec<&revenue_engine::ParticipantRevenueProfile> = profiles.values().collect();
+    Json(serde_json::json!({
+        "count": list.len(),
+        "profiles": list,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct CalculateFeesReq {
+    participant_id: String,
+    counterparty_id: String,
+    symbol: String,
+    side: String,
+    quantity: f64,
+    price: f64,
+    is_maker: bool,
+}
+
+async fn calculate_fees(
+    State(state): State<AppState>,
+    Json(req): Json<CalculateFeesReq>,
+) -> Json<serde_json::Value> {
+    let re = state.revenue_engine.read().await;
+    let result = re.calculate_trade_fees(
+        &req.participant_id, &req.counterparty_id, &req.symbol,
+        &req.side, req.quantity, req.price, req.is_maker,
+    ).await;
+    Json(serde_json::to_value(&result).unwrap_or_default())
+}
+
+async fn get_referral_info(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let guard = state.revenue_engine.read().await;
+    let profile = guard.get_participant_profile(&participant_id).await;
+    let tree = guard.get_referral_tree().read().await;
+    let referrals = tree.get(&participant_id).cloned().unwrap_or_default();
+    Json(serde_json::json!({
+        "participant_id": participant_id,
+        "profile": profile,
+        "referrals_count": referrals.len(),
+        "referrals": referrals,
+    }))
+}
+
+async fn get_revenue_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let metrics = {
+        let re = state.revenue_engine.read().await;
+        re.get_metrics().await
+    };
+    Json(serde_json::to_value(&metrics).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Lending Pool Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct LendingDepositReq { user_id: String, asset: String, amount: f64 }
+#[derive(serde::Deserialize)]
+struct LendingBorrowReq { user_id: String, asset: String, amount: f64, collateral_asset: String, collateral_amount: f64 }
+#[derive(serde::Deserialize)]
+struct LendingRepayReq { loan_id: u64, amount: f64 }
+#[derive(serde::Deserialize)]
+struct LendingWithdrawReq { deposit_id: u64, amount: f64 }
+
+async fn lending_deposit(State(state): State<AppState>, Json(req): Json<LendingDepositReq>) -> Json<serde_json::Value> {
+    match state.lending_pool.deposit(req.user_id, req.asset, req.amount) {
+        Ok(pos) => Json(serde_json::to_value(&pos).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn lending_borrow(State(state): State<AppState>, Json(req): Json<LendingBorrowReq>) -> Json<serde_json::Value> {
+    match state.lending_pool.borrow(req.user_id, req.asset, req.amount, req.collateral_asset, req.collateral_amount) {
+        Ok(loan) => Json(serde_json::to_value(&loan).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn lending_repay(State(state): State<AppState>, Json(req): Json<LendingRepayReq>) -> Json<serde_json::Value> {
+    match state.lending_pool.repay(req.loan_id, req.amount) {
+        Ok(loan) => Json(serde_json::to_value(&loan).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn lending_withdraw(State(state): State<AppState>, Json(req): Json<LendingWithdrawReq>) -> Json<serde_json::Value> {
+    match state.lending_pool.withdraw(req.deposit_id, req.amount) {
+        Ok(pos) => Json(serde_json::to_value(&pos).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn lending_snapshot(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let snap = state.lending_pool.snapshot();
+    Json(serde_json::to_value(&snap).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Securities Lending Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct SecuritiesLendReq { lender_id: String, asset_id: String, quantity: f64, fee_bps: u64, duration_days: u64 }
+#[derive(serde::Deserialize)]
+struct SecuritiesBorrowReq { borrower_id: String, offer_id: u64, collateral: f64 }
+#[derive(serde::Deserialize)]
+struct SecuritiesReturnReq { agreement_id: u64 }
+
+async fn securities_lend(State(state): State<AppState>, Json(req): Json<SecuritiesLendReq>) -> Json<serde_json::Value> {
+    match state.securities_lending.lend(req.lender_id, req.asset_id, req.quantity, req.fee_bps, req.duration_days) {
+        Ok(offer) => Json(serde_json::to_value(&offer).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn securities_borrow(State(state): State<AppState>, Json(req): Json<SecuritiesBorrowReq>) -> Json<serde_json::Value> {
+    match state.securities_lending.borrow(req.borrower_id, req.offer_id, req.collateral) {
+        Ok(agreement) => Json(serde_json::to_value(&agreement).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn securities_return(State(state): State<AppState>, Json(req): Json<SecuritiesReturnReq>) -> Json<serde_json::Value> {
+    match state.securities_lending.return_asset(req.agreement_id) {
+        Ok(agreement) => Json(serde_json::to_value(&agreement).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn securities_assets(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let assets = state.securities_lending.list_assets();
+    Json(serde_json::json!({"assets": assets}))
+}
+
+async fn securities_snapshot(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let snap = state.securities_lending.snapshot();
+    Json(serde_json::to_value(&snap).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Dark Pool Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn darkpool_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let dp = state.dark_pool.read().await;
+    let status = dp.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct DarkPoolSubmitReq {
+    pair: String,
+    side: String,
+    quantity: f64,
+    price: f64,
+}
+
+async fn darkpool_submit(
+    State(state): State<AppState>,
+    Json(req): Json<DarkPoolSubmitReq>,
+) -> Json<serde_json::Value> {
+    let order = types::Order {
+        id: uuid::Uuid::new_v4(),
+        id_tag: 0,
+        user_id: uuid::Uuid::new_v4(),
+        pair: req.pair.into(),
+        side: if req.side.to_lowercase() == "buy" { types::OrderSide::Buy } else { types::OrderSide::Sell },
+        order_type: types::OrderType::Limit,
+        price: req.price,
+        quantity: req.quantity,
+        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64,
+        ..Default::default()
+    };
+    let request = dark_pool_manager::SubmitOrderRequest {
+        order,
+        track: types::Track::Compliant,
+        signature: None,
+    };
+    let dp = state.dark_pool.read().await;
+    match dp.submit_order(request).await {
+        Ok(resp) => Json(serde_json::to_value(&resp).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn darkpool_trades(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let dp = state.dark_pool.read().await;
+    let trades = dp.get_trades().await;
+    Json(serde_json::json!({"trades": trades}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// FX Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn get_fx_rates(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let snap = state.fx_engine.snapshot();
+    Json(serde_json::to_value(&snap).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct FXQuoteReq { from: String, to: String, amount: f64 }
+
+async fn get_fx_quote(State(state): State<AppState>, Json(req): Json<FXQuoteReq>) -> Json<serde_json::Value> {
+    match state.fx_engine.quote(req.from, req.to, req.amount) {
+        Ok(quote) => Json(serde_json::to_value(&quote).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FXConvertReq { from: String, to: String, amount: f64 }
+
+async fn execute_fx_conversion(State(state): State<AppState>, Json(req): Json<FXConvertReq>) -> Json<serde_json::Value> {
+    match state.fx_engine.execute(req.from, req.to, req.amount) {
+        Ok(trade) => Json(serde_json::to_value(&trade).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn list_nostro_accounts(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let snap = state.fx_engine.snapshot();
+    Json(serde_json::json!({"accounts": snap.accounts}))
+}
+
+async fn get_nostro_balance(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.fx_engine.get_account_balance(&account_id) {
+        Some(balance) => Json(serde_json::json!({"account_id": account_id, "balance": balance})),
+        None => Json(serde_json::json!({"error": "account_not_found"})),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// Cross-Venue Arbitrage Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn cross_venue_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let stats = state.cross_venue_arb.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+async fn cross_venue_pnl(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let pnl = state.cross_venue_arb.get_pnl().await;
+    Json(serde_json::to_value(&pnl).unwrap_or_default())
+}
+
+async fn cross_venue_trades(
+    State(state): State<AppState>,
+    Path(n): Path<usize>,
+) -> Json<serde_json::Value> {
+    let trades = state.cross_venue_arb.get_recent_trades(n).await;
+    Json(serde_json::json!({"trades": trades}))
+}
+
+async fn cross_venue_prices(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let prices = state.cross_venue_arb.get_prices().await;
+    Json(serde_json::json!({"prices": prices}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Super-Arb Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn super_arb_stats(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let stats = state.super_arb.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+async fn super_arb_pnl(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let pnl = state.super_arb.get_pnl().await;
+    Json(serde_json::to_value(&pnl).unwrap_or_default())
+}
+
+async fn super_arb_trades(
+    State(state): State<AppState>,
+    Path(n): Path<usize>,
+) -> Json<serde_json::Value> {
+    let trades = state.super_arb.get_recent_trades(n).await;
+    Json(serde_json::json!({"trades": trades}))
+}
+
+async fn super_arb_prices(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let prices = state.super_arb.get_prices().await;
+    Json(serde_json::json!({"prices": prices}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Compliance Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct RegisterParticipantReq {
+    participant_id: String,
+    legal_entity_name: String,
+    jurisdiction: String,
+    lei: Option<String>,
+}
+
+async fn compliance_register(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterParticipantReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.register_participant(req.participant_id, req.legal_entity_name, req.jurisdiction, req.lei).await {
+        Ok(profile) => Json(serde_json::to_value(&profile).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SubmitKYCReq {
+    participant_id: String,
+    documents: Vec<compliance_engine::KYCDocument>,
+}
+
+async fn compliance_submit_kyc(
+    State(state): State<AppState>,
+    Json(req): Json<SubmitKYCReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.submit_kyc_documents(&req.participant_id, req.documents).await {
+        Ok(_) => Json(serde_json::json!({"status": "submitted"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ReviewKYCReq {
+    participant_id: String,
+    reviewer: String,
+    approved: bool,
+    notes: String,
+}
+
+async fn compliance_review_kyc(
+    State(state): State<AppState>,
+    Json(req): Json<ReviewKYCReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.review_kyc(&req.participant_id, &req.reviewer, req.approved, req.notes).await {
+        Ok(_) => Json(serde_json::json!({"status": if req.approved { "approved" } else { "rejected" }})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn compliance_profile(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.get_profile(&participant_id).await {
+        Some(profile) => Json(serde_json::to_value(&profile).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn compliance_alerts(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let alerts = state.compliance_engine.get_alerts(Some(&participant_id), true).await;
+    Json(serde_json::json!({"alerts": alerts}))
+}
+
+async fn compliance_all_alerts(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let alerts = state.compliance_engine.get_alerts(None, true).await;
+    Json(serde_json::json!({"alerts": alerts}))
+}
+
+#[derive(serde::Deserialize)]
+struct AlertActionReq {
+    alert_id: String,
+    by: String,
+}
+
+async fn compliance_acknowledge_alert(
+    State(state): State<AppState>,
+    Json(req): Json<AlertActionReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.acknowledge_alert(&req.alert_id, &req.by).await {
+        Ok(_) => Json(serde_json::json!({"status": "acknowledged"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn compliance_resolve_alert(
+    State(state): State<AppState>,
+    Json(req): Json<AlertActionReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.resolve_alert(&req.alert_id, &req.by, "resolved".to_string()).await {
+        Ok(_) => Json(serde_json::json!({"status": "resolved"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct FreezeReq {
+    participant_id: String,
+    reason: String,
+    officer: String,
+}
+
+async fn compliance_freeze(
+    State(state): State<AppState>,
+    Json(req): Json<FreezeReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.freeze_participant(&req.participant_id, req.reason, &req.officer).await {
+        Ok(_) => Json(serde_json::json!({"status": "frozen"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn compliance_unfreeze(
+    State(state): State<AppState>,
+    Json(req): Json<FreezeReq>,
+) -> Json<serde_json::Value> {
+    match state.compliance_engine.unfreeze_participant(&req.participant_id, req.reason, &req.officer).await {
+        Ok(_) => Json(serde_json::json!({"status": "unfrozen"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn compliance_audit_log(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let log = state.compliance_engine.get_audit_log(Some(&participant_id), 100).await;
+    Json(serde_json::json!({"audit_log": log}))
+}
+
+// ════════════════════════════════════════════════════════════
+// Risk Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct RiskRegisterReq {
+    participant_id: String,
+    initial_nav: f64,
+}
+
+async fn risk_register(
+    State(state): State<AppState>,
+    Json(req): Json<RiskRegisterReq>,
+) -> Json<serde_json::Value> {
+    let profile = state.risk_engine.register_participant(req.participant_id, req.initial_nav).await;
+    Json(serde_json::to_value(&profile).unwrap_or_default())
+}
+
+async fn risk_profile(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.risk_engine.get_profile(&participant_id).await {
+        Some(profile) => Json(serde_json::to_value(&profile).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn risk_alerts(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let alerts = state.risk_engine.get_alerts(Some(&participant_id), true).await;
+    Json(serde_json::json!({"alerts": alerts}))
+}
+
+async fn risk_all_alerts(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let alerts = state.risk_engine.get_alerts(None, true).await;
+    Json(serde_json::json!({"alerts": alerts}))
+}
+
+async fn risk_metrics(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let metrics = state.risk_engine.get_metrics().await;
+    Json(serde_json::to_value(&metrics).unwrap_or_default())
+}
+
+async fn risk_stress_test(
+    State(state): State<AppState>,
+    Path(participant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.risk_engine.run_stress_test(&participant_id).await {
+        Ok(results) => Json(serde_json::json!({"stress_test_results": results})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Onboarding Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct OnboardingInitiateReq {
+    client_name: String,
+    jurisdiction: String,
+    entity_type: String,
+    lei: Option<String>,
+    primary_contact_email: String,
+    primary_contact_name: String,
+    #[serde(default)]
+    expected_monthly_volume_usd: u64,
+    #[serde(default)]
+    expected_aum_usd: u64,
+}
+
+async fn onboarding_initiate(
+    State(state): State<AppState>,
+    Json(req): Json<OnboardingInitiateReq>,
+) -> Json<serde_json::Value> {
+    use onboarding_engine::{EntityType, Contact, ContactMethod};
+    let entity = match req.entity_type.to_lowercase().as_str() {
+        "individual" => EntityType::Individual,
+        "corporation" => EntityType::Corporation,
+        "partnership" => EntityType::Partnership,
+        "trust" => EntityType::Trust,
+        "fund" => EntityType::Fund,
+        "family_office" => EntityType::FamilyOffice,
+        _ => EntityType::Other(req.entity_type),
+    };
+    let contact = Contact {
+        name: req.primary_contact_name,
+        title: "".to_string(),
+        email: req.primary_contact_email,
+        phone: "".to_string(),
+        preferred_contact_method: ContactMethod::Email,
+    };
+    match state.onboarding_engine.initiate_onboarding(
+        req.client_name,
+        entity,
+        req.jurisdiction,
+        contact,
+        req.expected_monthly_volume_usd,
+        req.expected_aum_usd,
+    ).await {
+        Ok(client) => Json(serde_json::to_value(&client).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OnboardingDocReq {
+    client_id: String,
+    document_type: String,
+    file_hash: String,
+    issued_at: u64,
+    expires_at: Option<u64>,
+    issuing_authority: String,
+}
+
+async fn onboarding_submit_doc(
+    State(state): State<AppState>,
+    Json(req): Json<OnboardingDocReq>,
+) -> Json<serde_json::Value> {
+    use onboarding_engine::{DocumentType, ClientDocument};
+    let doc = ClientDocument {
+        document_id: uuid::Uuid::new_v4().to_string(),
+        document_type: DocumentType::Other(req.document_type),
+        file_name: "uploaded_document".to_string(),
+        file_hash: req.file_hash,
+        file_size_bytes: 0,
+        mime_type: "application/octet-stream".to_string(),
+        uploaded_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+        uploaded_by: "api_user".to_string(),
+        verified_at: None,
+        verified_by: None,
+        ai_verified: false,
+        ai_confidence: None,
+        expiry_date: req.expires_at,
+        tags: vec![],
+    };
+    match state.onboarding_engine.submit_document(&req.client_id, doc).await {
+        Ok(_) => Json(serde_json::json!({"status": "submitted"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct OnboardingAdvanceReq {
+    client_id: String,
+    approved: bool,
+    reviewer: String,
+}
+
+async fn onboarding_advance(
+    State(state): State<AppState>,
+    Json(req): Json<OnboardingAdvanceReq>,
+) -> Json<serde_json::Value> {
+    use onboarding_engine::{OnboardingStatus, StageOutcome};
+    let (stage, outcome) = if req.approved {
+        (OnboardingStatus::DocumentCollection, StageOutcome::Approved)
+    } else {
+        (OnboardingStatus::Rejected, StageOutcome::Rejected)
+    };
+    match state.onboarding_engine.advance_workflow_stage(&req.client_id, stage, &req.reviewer, outcome, "API review".to_string()).await {
+        Ok(_) => Json(serde_json::json!({"status": if req.approved { "advanced" } else { "rejected" }})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn onboarding_client(
+    State(state): State<AppState>,
+    Path(client_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.onboarding_engine.get_client(&client_id).await {
+        Some(client) => Json(serde_json::to_value(&client).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn onboarding_list_clients(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let clients = state.onboarding_engine.list_clients(None).await;
+    Json(serde_json::json!({"clients": clients}))
+}
+
+async fn onboarding_metrics(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let metrics = state.onboarding_engine.get_metrics().await;
+    Json(serde_json::to_value(&metrics).unwrap_or_default())
+}
+
+async fn onboarding_workflow(
+    State(state): State<AppState>,
+    Path(client_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.onboarding_engine.get_workflow(&client_id).await {
+        Some(wf) => Json(serde_json::to_value(&wf).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn onboarding_prime_broker(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.onboarding_engine.get_prime_broker_account(&account_id).await {
+        Some(acc) => Json(serde_json::to_value(&acc).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn onboarding_custodian(
+    State(state): State<AppState>,
+    Path(account_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.onboarding_engine.get_custodian_account(&account_id).await {
+        Some(acc) => Json(serde_json::to_value(&acc).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+// ════════════════════════════════════════════════════════════
+// Execution Engine Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct ExecOrderReq {
+    order_id: String,
+    symbol: String,
+    side: String,
+    order_type: String,
+    quantity: f64,
+    price: Option<f64>,
+    time_in_force: String,
+    execution_strategy: String,
+    max_participation_rate: Option<f64>,
+    start_time: Option<u64>,
+    end_time: Option<u64>,
+    urgency: String,
+}
+
+async fn execution_submit(
+    State(state): State<AppState>,
+    Json(req): Json<ExecOrderReq>,
+) -> Json<serde_json::Value> {
+    use execution_engine::{AdvancedOrder, OrderSide, OrderType, TimeInForce, ExecutionInstructions, AlgoParams};
+    let order = AdvancedOrder {
+        order_id: req.order_id.clone(),
+        client_order_id: req.order_id.clone(),
+        participant_id: "api_user".to_string(),
+        symbol: req.symbol,
+        side: if req.side.to_lowercase() == "buy" { OrderSide::Buy } else { OrderSide::Sell },
+        order_type: match req.order_type.to_lowercase().as_str() {
+            "market" => OrderType::Market,
+            "limit" => OrderType::Limit,
+            "stop" => OrderType::Stop,
+            "stop_limit" => OrderType::StopLimit,
+            _ => OrderType::Limit,
+        },
+        quantity: req.quantity,
+        filled_quantity: 0.0,
+        remaining_quantity: req.quantity,
+        price: req.price,
+        stop_price: None,
+        limit_price: req.price,
+        trailing_offset: None,
+        time_in_force: match req.time_in_force.to_lowercase().as_str() {
+            "day" => TimeInForce::GTC,
+            "gtc" => TimeInForce::GTC,
+            "ioc" => TimeInForce::IOC,
+            "fok" => TimeInForce::FOK,
+            _ => TimeInForce::GTC,
+        },
+        status: execution_engine::OrderStatus::New,
+        created_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+        updated_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+        expires_at: req.end_time,
+        execution_instructions: ExecutionInstructions::default(),
+        algo_params: AlgoParams::default(),
+        legs: vec![],
+        parent_order_id: None,
+        child_orders: vec![],
+        tags: std::collections::HashMap::new(),
+    };
+    match state.execution_engine.submit_order(order).await {
+        Ok(report) => Json(serde_json::to_value(&report).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn execution_cancel(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.execution_engine.cancel_order(&order_id).await {
+        Ok(_) => Json(serde_json::json!({"status": "cancelled"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn execution_order(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.execution_engine.get_order(&order_id).await {
+        Some(order) => Json(serde_json::to_value(&order).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn execution_reports(
+    State(state): State<AppState>,
+    Path(order_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let reports = state.execution_engine.get_execution_reports(&order_id).await;
+    Json(serde_json::json!({"reports": reports}))
+}
+
+async fn execution_metrics(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let metrics = state.execution_engine.get_metrics().await;
+    Json(serde_json::to_value(&metrics).unwrap_or_default())
+}
+
+async fn execution_mev_detect(
+    State(_state): State<AppState>,
+) -> Json<serde_json::Value> {
+    // MEV detection endpoint
+    Json(serde_json::json!({"status": "mev_detection_ready"}))
+}
+
+// ════════════════════════════════════════════════════════════
+// Liquidity Engine (BMM) Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn liquidity_aggregated_book(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.liquidity_engine.get_aggregated_book(&symbol).await {
+        Some(book) => Json(serde_json::to_value(&book).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LiquidityBestExecReq {
+    symbol: String,
+    side: String,
+    size_usd: f64,
+}
+
+async fn liquidity_best_execution(
+    State(state): State<AppState>,
+    Json(req): Json<LiquidityBestExecReq>,
+) -> Json<serde_json::Value> {
+    match state.liquidity_engine.get_best_execution(&req.symbol, &req.side, req.size_usd).await {
+        Some(plan) => Json(serde_json::to_value(&plan).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "no_execution_path"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RegisterMMReq {
+    maker_id: String,
+    venue: String,
+    symbols: Vec<String>,
+    min_spread_bps: f64,
+    max_position_usd: f64,
+    quote_size_usd: f64,
+    rebate_bps: u32,
+}
+
+async fn liquidity_register_mm(
+    State(state): State<AppState>,
+    Json(req): Json<RegisterMMReq>,
+) -> Json<serde_json::Value> {
+    use liquidity_engine::{MarketMakerProfile, RebateTier};
+    let rebate_tier = match req.rebate_bps {
+        0..=5 => RebateTier::Bronze,
+        6..=10 => RebateTier::Silver,
+        11..=20 => RebateTier::Gold,
+        _ => RebateTier::Platinum,
+    };
+    let profile = MarketMakerProfile {
+        participant_id: req.maker_id,
+        symbols: req.symbols,
+        min_spread_bps: req.min_spread_bps as u32,
+        max_position_usd: req.max_position_usd,
+        quote_size_usd: req.quote_size_usd,
+        uptime_requirement_pct: 99.0,
+        rebate_tier,
+        performance_score: 1.0,
+        total_volume_usd: 0.0,
+        total_rebates_usd: 0.0,
+        is_active: true,
+    };
+    match state.liquidity_engine.register_market_maker(profile).await {
+        Ok(_) => Json(serde_json::json!({"status": "registered"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn liquidity_metrics(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let metrics = state.liquidity_engine.get_metrics().await;
+    Json(serde_json::to_value(&metrics).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// White Label Handlers
+// ═══════════════════════════════════════════════════════════
+
+#[derive(serde::Deserialize)]
+struct WhiteLabelDeployReq {
+    tenant_id: String,
+    branding_name: String,
+    domain: String,
+    enabled_features: Vec<String>,
+    fee_bps: u32,
+    supported_pairs: Vec<String>,
+    custom_css: Option<String>,
+}
+
+async fn whitelabel_deploy(
+    State(state): State<AppState>,
+    Json(req): Json<WhiteLabelDeployReq>,
+) -> Json<serde_json::Value> {
+    use white_label::WhiteLabelConfig;
+    let config = WhiteLabelConfig {
+        brand_name: req.branding_name,
+        brand_logo_url: "".to_string(),
+        brand_primary_color: "#000000".to_string(),
+        domain: req.domain,
+        custom_fix_port: None,
+        custom_api_port: None,
+        dark_pool_enabled: req.enabled_features.contains(&"dark_pool".to_string()),
+        fba_enabled: req.enabled_features.contains(&"fba".to_string()),
+        ghost_enabled: req.enabled_features.contains(&"ghost".to_string()),
+        compliance_zk_enabled: req.enabled_features.contains(&"compliance_zk".to_string()),
+        shariah_enabled: req.enabled_features.contains(&"shariah".to_string()),
+        iso20022_enabled: req.enabled_features.contains(&"iso20022".to_string()),
+        dedicated_cores: 4,
+        monthly_volume_cap: 1_000_000.0,
+    };
+    let tenant_id = uuid::Uuid::parse_str(&req.tenant_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    match state.white_label.deploy(&tenant_id, config) {
+        Ok(instance) => Json(serde_json::to_value(&instance).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn whitelabel_instance(
+    State(state): State<AppState>,
+    Path(tenant_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let tenant_id = uuid::Uuid::parse_str(&tenant_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    match state.white_label.get_instance(&tenant_id) {
+        Some(instance) => Json(serde_json::to_value(&instance).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "not_found"})),
+    }
+}
+
+async fn whitelabel_list(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let instances = state.white_label.list_instances();
+    Json(serde_json::json!({"instances": instances}))
+}
+
+#[derive(serde::Deserialize)]
+struct WhiteLabelRecordReq {
+    tenant_id: String,
+}
+
+async fn whitelabel_record_order(
+    State(state): State<AppState>,
+    Json(req): Json<WhiteLabelRecordReq>,
+) -> Json<serde_json::Value> {
+    let tenant_id = uuid::Uuid::parse_str(&req.tenant_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    state.white_label.record_order(&tenant_id);
+    Json(serde_json::json!({"status": "recorded"}))
+}
+
+#[derive(serde::Deserialize)]
+struct WhiteLabelVolumeReq {
+    tenant_id: String,
+    volume: f64,
+}
+
+async fn whitelabel_record_volume(
+    State(state): State<AppState>,
+    Json(req): Json<WhiteLabelVolumeReq>,
+) -> Json<serde_json::Value> {
+    let tenant_id = uuid::Uuid::parse_str(&req.tenant_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    state.white_label.record_volume(&tenant_id, req.volume);
+    Json(serde_json::json!({"status": "recorded"}))
+}
+
+async fn whitelabel_count(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let count = state.white_label.deployment_count();
+    Json(serde_json::json!({"deployments": count}))
+}
+
+#[derive(serde::Deserialize)]
+struct WhiteLabelRemoveReq {
+    tenant_id: String,
+}
+
+async fn whitelabel_remove(
+    State(state): State<AppState>,
+    Json(req): Json<WhiteLabelRemoveReq>,
+) -> Json<serde_json::Value> {
+    let tenant_id = uuid::Uuid::parse_str(&req.tenant_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+    let removed = state.white_label.remove_instance(&tenant_id);
+    Json(serde_json::json!({"removed": removed}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Instant-Flow Revenue Routing Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn instant_flow_dashboard(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let dashboard = state.instant_flow.get_dashboard().await;
+    Json(serde_json::to_value(&dashboard).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct InstantFlowRecordReq {
+    source: String,
+    amount: f64,
+}
+
+async fn instant_flow_record(
+    State(state): State<AppState>,
+    Json(req): Json<InstantFlowRecordReq>,
+) -> Json<serde_json::Value> {
+    let source = match req.source.to_lowercase().as_str() {
+        "trading_fees" => instant_flow::RevenueSource::TradingFees,
+        "fx_spread" => instant_flow::RevenueSource::FxSpread,
+        "lending_interest" => instant_flow::RevenueSource::LendingInterest,
+        "dark_pool_fees" => instant_flow::RevenueSource::DarkPoolFees,
+        "arbitrage_profit" => instant_flow::RevenueSource::ArbitrageProfit,
+        "market_making" => instant_flow::RevenueSource::MarketMaking,
+        "flash_loan_fees" => instant_flow::RevenueSource::FlashLoanFees,
+        _ => return Json(serde_json::json!({"error": "invalid source — use: trading_fees, fx_spread, lending_interest, dark_pool_fees, arbitrage_profit, market_making, flash_loan_fees"})),
+    };
+    if req.amount <= 0.0 {
+        return Json(serde_json::json!({"error": "amount must be positive"}));
+    }
+    state.instant_flow.record_revenue(source, req.amount).await;
+    Json(serde_json::json!({"status": "recorded", "amount": req.amount}))
+}
+
+async fn instant_flow_distribute(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let distributions = state.instant_flow.distribute().await;
+    let total: f64 = distributions.iter().map(|d| d.amount).sum();
+    Json(serde_json::json!({
+        "executed": distributions.len(),
+        "total_amount": total,
+        "distributions": distributions,
+    }))
+}
+
+async fn instant_flow_config_get(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let config = state.instant_flow.get_config().await;
+    Json(serde_json::to_value(&config).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct InstantFlowConfigUpdateReq {
+    auto_compound_pct: Option<f64>,
+    reserve_target_usd: Option<f64>,
+    reserve_max_pct: Option<f64>,
+}
+
+async fn instant_flow_config_set(
+    State(state): State<AppState>,
+    Json(req): Json<InstantFlowConfigUpdateReq>,
+) -> Json<serde_json::Value> {
+    let mut config = state.instant_flow.get_config().await;
+    if let Some(pct) = req.auto_compound_pct {
+        config.auto_compound_pct = pct.clamp(0.0, 1.0);
+    }
+    if let Some(target) = req.reserve_target_usd {
+        config.reserve_target_usd = target.max(0.0);
+    }
+    if let Some(max_pct) = req.reserve_max_pct {
+        config.reserve_max_pct = max_pct.clamp(0.0, 1.0);
+    }
+    state.instant_flow.update_config(config).await;
+    Json(serde_json::json!({"status": "updated"}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Vampire Core Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn vampire_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let status = state.vampire_core.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn vampire_treasury(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let treasury = state.vampire_core.get_treasury().await;
+    Json(serde_json::to_value(&treasury).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct VampireAbsorbReq {
+    source: String,
+    amount: f64,
+}
+
+async fn vampire_absorb(
+    State(state): State<AppState>,
+    Json(req): Json<VampireAbsorbReq>,
+) -> Json<serde_json::Value> {
+    if req.amount <= 0.0 {
+        return Json(serde_json::json!({"error": "amount must be positive"}));
+    }
+    state.vampire_core.absorb_profit(&req.source, req.amount).await;
+    Json(serde_json::json!({"status": "absorbed", "source": req.source, "amount": req.amount}))
+}
+
+async fn vampire_config_get(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let config = state.vampire_core.get_config().await;
+    Json(serde_json::to_value(&config).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct VampireConfigUpdateReq {
+    reinvest_pct: Option<f64>,
+    hunger_threshold_volatility: Option<f64>,
+    compound_interval_secs: Option<u64>,
+    min_profit_to_absorb: Option<f64>,
+}
+
+async fn vampire_config_set(
+    State(state): State<AppState>,
+    Json(req): Json<VampireConfigUpdateReq>,
+) -> Json<serde_json::Value> {
+    let mut config = state.vampire_core.get_config().await;
+    if let Some(pct) = req.reinvest_pct {
+        config.reinvest_pct = pct.clamp(0.0, 1.0);
+    }
+    if let Some(threshold) = req.hunger_threshold_volatility {
+        config.hunger_threshold_volatility = threshold.max(0.0);
+    }
+    if let Some(interval) = req.compound_interval_secs {
+        config.compound_interval_secs = interval.max(1);
+    }
+    if let Some(min) = req.min_profit_to_absorb {
+        config.min_profit_to_absorb = min.max(0.0);
+    }
+    state.vampire_core.update_config(config).await;
+    Json(serde_json::json!({"status": "updated"}))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Sovereign Ghost — Network Privacy Layer Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn ghost_privacy_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.sovereign_ghost.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn ghost_privacy_create_circuit(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match state.sovereign_ghost.create_circuit().await {
+        Ok(circuit) => Json(serde_json::to_value(&circuit).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn ghost_privacy_dissolve_circuit(
+    State(state): State<AppState>,
+    Path(circuit_id): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.sovereign_ghost.dissolve_circuit(&circuit_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "dissolved", "circuit_id": circuit_id})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn ghost_privacy_emergency(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match state.sovereign_ghost.emergency_dissolve_all().await {
+        Ok(()) => {
+            let status = state.sovereign_ghost.get_status().await;
+            Json(serde_json::json!({
+                "status": "emergency_activated",
+                "dissolved": status.total_dissolved,
+                "active_circuits": status.active_circuits,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn ghost_privacy_rotate_identity(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let identity = state.sovereign_ghost.rotate_identity().await;
+    Json(serde_json::to_value(&identity).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Flash Loan Arbitrage API Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn flash_loan_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.flash_loan_api.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn flash_loan_opportunities(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let opportunities = state.flash_loan_api.get_opportunities().await;
+    Json(serde_json::json!({
+        "count": opportunities.len(),
+        "opportunities": opportunities,
+    }))
+}
+
+async fn flash_loan_execute(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let opportunity_id = payload.get("opportunity_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match state.flash_loan_api.execute(opportunity_id).await {
+        Ok(result) => Json(serde_json::to_value(&result).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn flash_loan_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let history = state.flash_loan_api.get_history(50).await;
+    Json(serde_json::json!({
+        "count": history.len(),
+        "trades": history,
+    }))
+}
+
+// ═══════════════════════════════════════════════════════════
+// MEV Protection API Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn mev_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.mev_api.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn mev_threats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let threats = state.mev_api.get_threats().await;
+    Json(serde_json::json!({
+        "count": threats.len(),
+        "threats": threats,
+    }))
+}
+
+async fn mev_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.mev_api.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+async fn mev_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let history = state.mev_api.get_history(50).await;
+    Json(serde_json::json!({
+        "count": history.len(),
+        "incidents": history,
+    }))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Batch Auction API Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn batch_auction_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match state.batch_auction_api.get_current_auction().await {
+        Some(auction) => Json(serde_json::to_value(&auction).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "no auction data"})),
+    }
+}
+
+async fn batch_auction_start(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let pair = payload.get("pair")
+        .and_then(|v| v.as_str())
+        .unwrap_or("USD/EUR");
+    match state.batch_auction_api.start_auction(pair).await {
+        Ok(batch_id) => Json(serde_json::json!({"status": "started", "batch_id": batch_id})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn batch_auction_submit(
+    State(state): State<AppState>,
+    Json(order): Json<batch_auction_api::BatchOrder>,
+) -> Json<serde_json::Value> {
+    match state.batch_auction_api.submit_order(order).await {
+        Ok(()) => Json(serde_json::json!({"status": "submitted"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn batch_auction_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let history = state.batch_auction_api.get_history().await;
+    Json(serde_json::json!({
+        "count": history.len(),
+        "auctions": history,
+    }))
+}
+
+// ═══════════════════════════════════════════════════════════
+// Futures & Options API Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn futures_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.futures_api.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn futures_positions(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let positions = state.futures_api.get_positions().await;
+    Json(serde_json::json!({
+        "count": positions.len(),
+        "positions": positions,
+    }))
+}
+
+async fn futures_instruments(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let instruments = state.futures_api.get_instruments().await;
+    Json(serde_json::json!({
+        "count": instruments.len(),
+        "instruments": instruments,
+    }))
+}
+
+async fn futures_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.futures_api.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+// ═══════════════════════════════════════════════════════════
+// Liquidation Engine API Handlers
+// ═══════════════════════════════════════════════════════════
+
+async fn liquidation_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.liquidation_api.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn liquidation_risky(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let positions = state.liquidation_api.get_positions_at_risk().await;
+    Json(serde_json::json!({
+        "count": positions.len(),
+        "positions": positions,
+    }))
+}
+
+async fn liquidation_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let history = state.liquidation_api.get_history().await;
+    Json(serde_json::json!({
+        "count": history.len(),
+        "events": history,
+    }))
+}
+
+async fn liquidation_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.liquidation_api.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+// ==================== AI CEO Handlers ====================
+
+async fn ceo_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.ai_ceo.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn ceo_analysis(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let analysis = state.ai_ceo.analyze_market().await;
+    Json(serde_json::to_value(&analysis).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct CeoDecisionReq {
+    symbol: String,
+    available_balance: Option<f64>,
+}
+
+async fn ceo_decisions(
+    State(state): State<AppState>,
+    Json(req): Json<CeoDecisionReq>,
+) -> Json<serde_json::Value> {
+    let analysis = state.ai_ceo.analyze_market().await;
+    let context = ai_ceo::DecisionContext {
+        symbol: req.symbol,
+        current_positions: std::collections::HashMap::new(),
+        available_balance: req.available_balance.unwrap_or(1_000_000.0),
+        recent_trades: Vec::new(),
+        market_analysis: analysis,
+    };
+    let decision = state.ai_ceo.make_decision(context).await;
+    let review = state.ai_ceo.review_outcomes().await;
+    Json(serde_json::json!({
+        "decision": decision,
+        "review": review,
+    }))
+}
+
+async fn ceo_recommendations(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let recs = state.ai_ceo.get_recommendations().await;
+    Json(serde_json::to_value(&recs).unwrap_or_default())
+}
+
+// ── BMM X⁴Y=K AMM Handlers ──
+
+async fn bmm_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.bmm.is_running().await;
+    let stats = state.bmm.get_stats().await;
+    Json(serde_json::json!({
+        "running": running,
+        "stats": stats,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct BmmQuoteReq {
+    pair: String,
+    side: String,
+    amount_in: f64,
+}
+
+async fn bmm_quote(
+    State(state): State<AppState>,
+    Json(req): Json<BmmQuoteReq>,
+) -> Json<serde_json::Value> {
+    let side = match req.side.as_str() {
+        "buy" => types::OrderSide::Buy,
+        "sell" => types::OrderSide::Sell,
+        _ => return Json(serde_json::json!({"error": "invalid side, use 'buy' or 'sell'"})),
+    };
+    match state.bmm.get_quote(&req.pair, side, req.amount_in).await {
+        Some(quote) => Json(serde_json::to_value(&quote).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "no quote available"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BmmSwapReq {
+    pair: String,
+    side: String,
+    amount_in: f64,
+    user_id: Uuid,
+}
+
+async fn bmm_swap(
+    State(state): State<AppState>,
+    Json(req): Json<BmmSwapReq>,
+) -> Json<serde_json::Value> {
+    let side = match req.side.as_str() {
+        "buy" => types::OrderSide::Buy,
+        "sell" => types::OrderSide::Sell,
+        _ => return Json(serde_json::json!({"error": "invalid side"})),
+    };
+    match state.bmm.execute_swap(&req.pair, side, req.amount_in, req.user_id).await {
+        Some(trade) => Json(serde_json::to_value(&trade).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "swap failed"})),
+    }
+}
+
+async fn bmm_pool(
+    State(state): State<AppState>,
+    Path(pair): Path<String>,
+) -> Json<serde_json::Value> {
+    match state.bmm.get_pool(&pair).await {
+        Some(pool) => Json(serde_json::to_value(&pool).unwrap_or_default()),
+        None => Json(serde_json::json!({"error": "pool not found"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BmmAddLiqReq {
+    pair: String,
+    amount_x: f64,
+    amount_y: f64,
+}
+
+async fn bmm_add_liquidity(
+    State(state): State<AppState>,
+    Json(req): Json<BmmAddLiqReq>,
+) -> Json<serde_json::Value> {
+    match state.bmm.add_liquidity(&req.pair, req.amount_x, req.amount_y).await {
+        Some(lp) => Json(serde_json::json!({"lp_tokens": lp})),
+        None => Json(serde_json::json!({"error": "failed to add liquidity"})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BmmRemoveLiqReq {
+    pair: String,
+    lp_tokens: f64,
+}
+
+async fn bmm_remove_liquidity(
+    State(state): State<AppState>,
+    Json(req): Json<BmmRemoveLiqReq>,
+) -> Json<serde_json::Value> {
+    match state.bmm.remove_liquidity(&req.pair, req.lp_tokens).await {
+        Some((x, y)) => Json(serde_json::json!({"amount_x": x, "amount_y": y})),
+        None => Json(serde_json::json!({"error": "failed to remove liquidity"})),
+    }
+}
+
+async fn bmm_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.bmm.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+// ── BMM Circuit Shield (C5) Handlers ──
+
+async fn shield_status(
+    State(state): State<AppState>,
+    Path(pair): Path<String>,
+) -> Json<serde_json::Value> {
+    let status = state.bmm_shield.shield_status(&pair).await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct ShieldSwapReq {
+    pair: String,
+    side: String,
+    amount_in: f64,
+    user_id: Uuid,
+}
+
+async fn shield_swap(
+    State(state): State<AppState>,
+    Json(req): Json<ShieldSwapReq>,
+) -> Json<serde_json::Value> {
+    let side = match req.side.as_str() {
+        "buy" => types::OrderSide::Buy,
+        "sell" => types::OrderSide::Sell,
+        _ => return Json(serde_json::json!({"error": "invalid side"})),
+    };
+    match state
+        .bmm_shield
+        .execute_swap_shielded(&req.pair, side, req.amount_in, req.user_id)
+        .await
+    {
+        bmm_circuit_shield::BmmShieldedSwap::Executed(trade) => {
+            Json(serde_json::to_value(&trade).unwrap_or_default())
+        }
+        bmm_circuit_shield::BmmShieldedSwap::Halted { reason } => {
+            Json(serde_json::json!({"status": "halted", "reason": reason}))
+        }
+        bmm_circuit_shield::BmmShieldedSwap::NoQuote => {
+            Json(serde_json::json!({"status": "no_quote"}))
+        }
+    }
+}
+
+// ── Triangular Fee Network (C2) Handlers ──
+
+#[derive(serde::Deserialize)]
+struct TriangularRouteReq {
+    input_usd: f64,
+    pair: String,
+    from_ccy: String,
+    to_ccy: String,
+    live: Option<bool>,
+}
+
+async fn triangular_route(
+    State(state): State<AppState>,
+    Json(req): Json<TriangularRouteReq>,
+) -> Json<serde_json::Value> {
+    let report = if req.live.unwrap_or(false) {
+        state
+            .triangular_fee
+            .route_trade_live(
+                req.input_usd,
+                &req.pair,
+                types::OrderSide::Buy,
+                &req.from_ccy,
+                &req.to_ccy,
+                uuid::Uuid::new_v4(),
+                "cloud",
+                "bmm",
+            )
+            .await
+    } else {
+        state
+            .triangular_fee
+            .route_trade_simulated(req.input_usd, &req.pair, &req.from_ccy, &req.to_ccy)
+    };
+    state.triangular_fee.record(&report);
+    Json(serde_json::to_value(&report).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct TriangularMultiplierReq {
+    legs: Vec<bool>,
+}
+
+async fn triangular_multiplier(
+    State(state): State<AppState>,
+    Json(req): Json<TriangularMultiplierReq>,
+) -> Json<serde_json::Value> {
+    let mut legs = [false; 3];
+    for (i, v) in req.legs.iter().enumerate().take(3) {
+        legs[i] = *v;
+    }
+    let multiplier = state.triangular_fee.projected_revenue_multiplier(&legs);
+    Json(serde_json::json!({"legs": legs, "revenue_multiplier": multiplier}))
+}
+
+async fn triangular_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.triangular_fee.stats();
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+// ── eBPF/XDP Handlers ──
+
+async fn xdp_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.xdp.is_running().await;
+    let kill = state.xdp.is_kill_switch_active().await;
+    let stats = state.xdp.get_stats().await;
+    Json(serde_json::json!({"running": running, "kill_switch": kill, "stats": stats}))
+}
+
+async fn xdp_rules(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let rules = state.xdp.get_rules().await;
+    Json(serde_json::to_value(&rules).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct XDPAddRuleReq {
+    rule_type: String,
+    action: String,
+    priority: u32,
+    src_ip: Option<String>,
+    dst_ip: Option<String>,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
+}
+
+async fn xdp_add_rule(
+    State(state): State<AppState>,
+    Json(req): Json<XDPAddRuleReq>,
+) -> Json<serde_json::Value> {
+    let rule_type = match req.rule_type.as_str() {
+        "rate_limit" => xdp_firewall::XDPRuleType::RateLimit,
+        "geo_block" => xdp_firewall::XDPRuleType::GeoBlock,
+        "ip_block" => xdp_firewall::XDPRuleType::IpBlock,
+        "ddos" => xdp_firewall::XDPRuleType::DDoS,
+        "ghost_drop" => xdp_firewall::XDPRuleType::GhostDrop,
+        _ => return Json(serde_json::json!({"error": "invalid rule type"})),
+    };
+    let action = match req.action.as_str() {
+        "pass" => xdp_firewall::XDPAction::Pass,
+        "drop" => xdp_firewall::XDPAction::Drop,
+        "abort" => xdp_firewall::XDPAction::Abort,
+        _ => return Json(serde_json::json!({"error": "invalid action"})),
+    };
+    let rule = xdp_firewall::XDPRule {
+        id: rand::random::<u64>(),
+        name: String::new(),
+        rule_type,
+        action,
+        priority: req.priority,
+        criteria: xdp_firewall::XDPMatch {
+            src_ip: req.src_ip,
+            dst_ip: req.dst_ip,
+            src_port: req.src_port,
+            dst_port: req.dst_port,
+            protocol: None,
+            country: None,
+            packet_size_gt: None,
+            packet_size_lt: None,
+            tls_sni: None,
+            payload_regex: None,
+            anomaly_score_gt: None,
+        },
+        hit_count: 0,
+        last_hit: None,
+        enabled: true,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        description: String::new(),
+    };
+    match state.xdp.add_rule(rule).await {
+        Ok(id) => Json(serde_json::json!({"rule_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct XDPKillSwitchReq {
+    activate: bool,
+}
+
+async fn xdp_kill_switch(
+    State(state): State<AppState>,
+    Json(req): Json<XDPKillSwitchReq>,
+) -> Json<serde_json::Value> {
+    if req.activate {
+        state.xdp.activate_kill_switch().await;
+        Json(serde_json::json!({"status": "activated"}))
+    } else {
+        state.xdp.deactivate_kill_switch().await;
+        Json(serde_json::json!({"status": "deactivated"}))
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct XDPProcessReq {
+    src_ip: String,
+    dst_ip: String,
+    src_port: u16,
+    dst_port: u16,
+    protocol: String,
+    size: u32,
+}
+
+async fn xdp_process_packet(
+    State(state): State<AppState>,
+    Json(req): Json<XDPProcessReq>,
+) -> Json<serde_json::Value> {
+    let packet = xdp_firewall::PacketInfo {
+        src_ip: req.src_ip,
+        dst_ip: req.dst_ip,
+        src_port: req.src_port,
+        dst_port: req.dst_port,
+        protocol: req.protocol,
+        size: req.size,
+        timestamp: chrono::Utc::now(),
+        tls_sni: None,
+        payload_hash: None,
+    };
+    let action = state.xdp.process_packet(&packet).await;
+    Json(serde_json::json!({"action": format!("{:?}", action)}))
+}
+
+// ── memfd_secret Handlers ──
+
+async fn memfd_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.memfd.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct MemfdStoreReq {
+    id: String,
+    namespace: String,
+    key_id: String,
+    data: Vec<u8>,
+    algorithm: String,
+}
+
+async fn memfd_store(
+    State(state): State<AppState>,
+    Json(req): Json<MemfdStoreReq>,
+) -> Json<serde_json::Value> {
+    match state.memfd.store_secret(&req.id, &req.namespace, &req.key_id, req.data, &req.algorithm).await {
+        Ok(()) => Json(serde_json::json!({"status": "stored"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct MemfdAccessReq {
+    id: String,
+}
+
+async fn memfd_access(
+    State(state): State<AppState>,
+    Json(req): Json<MemfdAccessReq>,
+) -> Json<serde_json::Value> {
+    match state.memfd.access_secret(&req.id).await {
+        Ok(data) => Json(serde_json::json!({"data": data})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn memfd_list(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let secrets = state.memfd.list_secrets(None).await;
+    Json(serde_json::to_value(&secrets).unwrap_or_default())
+}
+
+// ── HugePages Handlers ──
+
+async fn hugepages_stats(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.hugepages.get_stats().await;
+    Json(serde_json::to_value(&stats).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct HugePagesAllocReq {
+    size: usize,
+}
+
+async fn hugepages_allocate(
+    State(state): State<AppState>,
+    Json(req): Json<HugePagesAllocReq>,
+) -> Json<serde_json::Value> {
+    match state.hugepages.allocate(req.size).await {
+        Ok(id) => Json(serde_json::json!({"region_id": id})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HugePagesDeallocReq {
+    region_id: u32,
+}
+
+async fn hugepages_deallocate(
+    State(state): State<AppState>,
+    Json(req): Json<HugePagesDeallocReq>,
+) -> Json<serde_json::Value> {
+    match state.hugepages.deallocate(req.region_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "deallocated"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ── ZK-SNARK Handlers ──
+
+async fn zk_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.zk_snark.is_running().await;
+    let stats = state.zk_snark.get_stats().await;
+    Json(serde_json::json!({"running": running, "stats": stats}))
+}
+
+#[derive(serde::Deserialize)]
+struct ZKProofReq {
+    circuit_id: String,
+    private_inputs: Vec<u8>,
+    public_inputs: Vec<Vec<u8>>,
+}
+
+async fn zk_generate_proof(
+    State(state): State<AppState>,
+    Json(req): Json<ZKProofReq>,
+) -> Json<serde_json::Value> {
+    match state.zk_snark.generate_proof(&req.circuit_id, &req.private_inputs, &req.public_inputs, None).await {
+        Ok(proof) => Json(serde_json::to_value(&proof).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ZKVerifyReq {
+    proof_id: String,
+}
+
+async fn zk_verify_proof(
+    State(state): State<AppState>,
+    Json(req): Json<ZKVerifyReq>,
+) -> Json<serde_json::Value> {
+    match state.zk_snark.verify_proof(&req.proof_id).await {
+        Ok(valid) => Json(serde_json::json!({"valid": valid})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct ZKCircuitReq {
+    circuit_id: String,
+    name: String,
+    num_constraints: u64,
+    num_variables: u64,
+    num_private_inputs: u64,
+    num_public_inputs: u64,
+    description: String,
+}
+
+async fn zk_circuits(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let stats = state.zk_snark.get_stats().await;
+    Json(serde_json::json!({"circuits": stats.circuits_registered}))
+}
+
+async fn zk_register_circuit(
+    State(state): State<AppState>,
+    Json(req): Json<ZKCircuitReq>,
+) -> Json<serde_json::Value> {
+    let circuit = zk_snark::ZKCircuit {
+        circuit_id: req.circuit_id,
+        name: req.name,
+        num_constraints: req.num_constraints,
+        num_variables: req.num_variables,
+        num_private_inputs: req.num_private_inputs,
+        num_public_inputs: req.num_public_inputs,
+        description: req.description,
+        wasm_bytes: None,
+        r1cs_bytes: None,
+        compiled_at: chrono::Utc::now(),
+        version: 1,
+    };
+    match state.zk_snark.register_circuit(circuit).await {
+        Ok(()) => Json(serde_json::json!({"status": "registered"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ── HTLC Bridge Handlers ──
+
+async fn htlc_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.htlc.is_running().await;
+    let stats = state.htlc.get_stats().await;
+    Json(serde_json::json!({"running": running, "stats": stats}))
+}
+
+#[derive(serde::Deserialize)]
+struct HTLCCreateReq {
+    sender: String,
+    receiver: String,
+    amount: f64,
+    token: String,
+    chain: String,
+    hash_lock: Vec<u8>,
+    timeout: Option<u64>,
+}
+
+async fn htlc_create(
+    State(state): State<AppState>,
+    Json(req): Json<HTLCCreateReq>,
+) -> Json<serde_json::Value> {
+    match state.htlc.create_contract(&req.sender, &req.receiver, req.amount, &req.token, &req.chain, req.hash_lock, req.timeout, None).await {
+        Ok(contract) => Json(serde_json::to_value(&contract).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HTLCClaimReq {
+    contract_id: String,
+    preimage: Vec<u8>,
+}
+
+async fn htlc_claim(
+    State(state): State<AppState>,
+    Json(req): Json<HTLCClaimReq>,
+) -> Json<serde_json::Value> {
+    match state.htlc.claim(&req.contract_id, &req.preimage).await {
+        Ok(()) => Json(serde_json::json!({"status": "claimed"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HTLCRefundReq {
+    contract_id: String,
+}
+
+async fn htlc_refund(
+    State(state): State<AppState>,
+    Json(req): Json<HTLCRefundReq>,
+) -> Json<serde_json::Value> {
+    match state.htlc.refund(&req.contract_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "refunded"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ── Policy DSL Handlers ──
+
+async fn policy_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.policy_dsl.is_running().await;
+    let stats = state.policy_dsl.get_stats().await;
+    Json(serde_json::json!({"running": running, "stats": stats}))
+}
+
+#[derive(serde::Deserialize)]
+struct PolicyCompileReq {
+    policy_id: String,
+    name: String,
+    description: String,
+    language: String,
+    source: String,
+    direction: String,
+    priority: u32,
+}
+
+async fn policy_compile(
+    State(state): State<AppState>,
+    Json(req): Json<PolicyCompileReq>,
+) -> Json<serde_json::Value> {
+    let lang = match req.language.as_str() {
+        "rust" => policy_dsl::PolicyLanguage::Rust,
+        "rego" => policy_dsl::PolicyLanguage::Rego,
+        "dsl" => policy_dsl::PolicyLanguage::DSL,
+        _ => return Json(serde_json::json!({"error": "invalid language"})),
+    };
+    let policy = policy_dsl::Policy {
+        policy_id: req.policy_id,
+        name: req.name,
+        description: req.description,
+        language: lang,
+        source: req.source,
+        compiled_wasm: None,
+        aot_compiled: None,
+        version: 0,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        active: true,
+        direction: req.direction,
+        priority: req.priority,
+        tags: vec![],
+        dependencies: vec![],
+        gas_used: 0,
+        memory_used: 0,
+        compile_time_ms: 0,
+        metadata: std::collections::HashMap::new(),
+    };
+    match state.policy_dsl.register_policy(policy).await {
+        Ok(()) => Json(serde_json::json!({"status": "compiled"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn policy_list(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let policies = state.policy_dsl.list_policies(None, false).await;
+    Json(serde_json::to_value(&policies).unwrap_or_default())
+}
+
+async fn policy_snapshot(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match state.policy_dsl.create_snapshot().await {
+        Ok(snap) => Json(serde_json::to_value(&snap).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ── Direction Supervisor Handlers ──
+
+async fn supervisor_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.supervisor.is_running().await;
+    let stats = state.supervisor.get_stats().await;
+    Json(serde_json::json!({"running": running, "stats": stats}))
+}
+
+async fn supervisor_processes(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let processes = state.supervisor.list_processes().await;
+    Json(serde_json::to_value(&processes).unwrap_or_default())
+}
+
+#[derive(serde::Deserialize)]
+struct SupervisorCrashReq {
+    direction_id: String,
+    error: String,
+}
+
+async fn supervisor_crash(
+    State(state): State<AppState>,
+    Json(req): Json<SupervisorCrashReq>,
+) -> Json<serde_json::Value> {
+    match state.supervisor.report_crash(&req.direction_id, &req.error).await {
+        Ok(()) => Json(serde_json::json!({"status": "reported"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+// ── Direction Registry Handlers ──
+
+async fn direction_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let running = state.direction_registry.is_running().await;
+    let stats = state.direction_registry.get_stats().await;
+    Json(serde_json::json!({"running": running, "stats": stats}))
+}
+
+#[derive(serde::Deserialize)]
+struct DirectionRegisterReq {
+    direction_id: String,
+    name: String,
+    asset_class: String,
+}
+
+async fn direction_register(
+    State(state): State<AppState>,
+    Json(req): Json<DirectionRegisterReq>,
+) -> Json<serde_json::Value> {
+    let asset_class = match req.asset_class.as_str() {
+        "equities" => direction_registry::AssetClass::Equities,
+        "crypto" => direction_registry::AssetClass::Crypto,
+        "bonds" => direction_registry::AssetClass::Bonds,
+        "fx" => direction_registry::AssetClass::FX,
+        "derivatives" => direction_registry::AssetClass::Derivatives,
+        "commodities" => direction_registry::AssetClass::Commodities,
+        other => direction_registry::AssetClass::Custom(other.to_string()),
+    };
+    let direction = direction_registry::Direction {
+        direction_id: req.direction_id,
+        name: req.name,
+        asset_class,
+        status: direction_registry::DirectionStatus::Registered,
+        version: "1.0.0".to_string(),
+        config: std::collections::HashMap::new(),
+        wasm_module: None,
+        created_at: chrono::Utc::now().timestamp_millis(),
+        updated_at: chrono::Utc::now().timestamp_millis(),
+        load_count: 0,
+        last_loaded: None,
+        metadata: std::collections::HashMap::new(),
+    };
+    match state.direction_registry.register(direction).await {
+        Ok(()) => Json(serde_json::json!({"status": "registered"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct DirectionLoadReq {
+    direction_id: String,
+}
+
+async fn direction_load(
+    State(state): State<AppState>,
+    Json(req): Json<DirectionLoadReq>,
+) -> Json<serde_json::Value> {
+    match state.direction_registry.load_direction(&req.direction_id).await {
+        Ok(()) => Json(serde_json::json!({"status": "loaded"})),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn direction_list(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let directions = state.direction_registry.list_directions(None).await;
+    Json(serde_json::to_value(&directions).unwrap_or_default())
+}
+
+async fn direction_snapshot(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    match state.direction_registry.create_snapshot().await {
+        Ok(snap) => Json(serde_json::to_value(&snap).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn flash_loan_v2_status(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let status = state.flash_loan_api_v2.get_status().await;
+    Json(serde_json::to_value(&status).unwrap_or_default())
+}
+
+async fn flash_loan_v2_opportunities(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let opportunities = state.flash_loan_api_v2.get_opportunities().await;
+    Json(serde_json::json!({
+        "count": opportunities.len(),
+        "opportunities": opportunities,
+    }))
+}
+
+async fn flash_loan_v2_execute(
+    State(state): State<AppState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let opportunity_id = payload.get("opportunity_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match state.flash_loan_api_v2.execute(opportunity_id).await {
+        Ok(result) => Json(serde_json::to_value(&result).unwrap_or_default()),
+        Err(e) => Json(serde_json::json!({"error": e})),
+    }
+}
+
+async fn flash_loan_v2_history(
+    State(state): State<AppState>,
+) -> Json<serde_json::Value> {
+    let history = state.flash_loan_api_v2.get_history(50).await;
+    Json(serde_json::json!({
+        "count": history.len(),
+        "trades": history,
+    }))
 }

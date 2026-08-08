@@ -1,0 +1,14 @@
+[package]
+name = "the-bridge-atm-gateway"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+axum = "0.7"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true

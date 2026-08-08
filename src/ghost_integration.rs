@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 // ==================== Constants ====================
@@ -269,7 +268,7 @@ impl GhostCloak {
         // Large order — split across brokers
         let num_brokers = active_brokers.len().min(self.max_fragments).max(self.min_fragments);
         let num_fragments = rand::thread_rng().gen_range(self.min_fragments..=num_brokers.min(self.max_fragments));
-        let mut phantom_id = self.generate_phantom_id(user_id, order_id);
+        let phantom_id = self.generate_phantom_id(user_id, order_id);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -1,0 +1,12 @@
+[build]
+jobs = 2
+
+[profile.test]
+opt-level = 0
+debug = false
+incremental = true
+codegen-units = 16
+
+[profile.bench]
+opt-level = 3
+debug = false

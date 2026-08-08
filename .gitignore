@@ -10,3 +10,18 @@ deploy/.env.*
 *.log
 .DS_Store
 .github/
+
+# Config Manager
+config/
+app/config/
+*.enc
+*.encrypted
+*.backup
+
+# Config Manager Cache
+local-additions/config-manager/target/
+local-additions/config-manager/.env
+local-additions/config-manager/.env.local
+local-additions/config-manager/Cargo.lock
+local-additions/config-manager/.aws
+local-additions/config-manager/.ssh

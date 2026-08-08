@@ -1,0 +1,6 @@
+[submodule "local-additions/Z-smart-contracts/lib/forge-std"]
+	path = local-additions/Z-smart-contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "local-additions/Z-smart-contracts/lib/openzeppelin-contracts"]
+	path = local-additions/Z-smart-contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts

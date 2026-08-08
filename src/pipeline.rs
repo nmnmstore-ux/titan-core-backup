@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle, available_parallelism};
 use std::time::Instant;
 
-use crate::numa::CPUAffinity;
+use crate::numa::{CPUAffinity, NumaVec};
 
 const PIN_DRAIN_CORE: u32 = 1;
 const PIN_WORKER_BASE: u32 = 2;
@@ -15,6 +15,11 @@ const STAGE_CAPACITY: usize = 1 << 18;
 const BATCH_MAX: usize = 10_000;
 const BATCH_TIME_US: u64 = 100_000;
 const BURST_WINDOW: u64 = 50_000;
+
+/// Cache line size. Each ``Slot`` is padded so the hot ``seq`` atomics of
+/// adjacent slots never share a cache line — eliminating ``False Locality``
+/// (cross-core contention on the ring's commit/consume paths).
+const CACHELINE: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct TradePayload {
@@ -43,13 +48,16 @@ impl TradePayload {
 struct Slot {
     seq: AtomicU64,
     data: std::cell::UnsafeCell<std::mem::MaybeUninit<TradePayload>>,
+    /// Padding to ``CACHELINE`` bytes so the ``seq`` field of one slot never
+    /// shares a cache line with the ``seq`` field of the next slot.
+    _pad: [u8; CACHELINE],
 }
 
 unsafe impl Send for Slot {}
 unsafe impl Sync for Slot {}
 
 pub struct Disruptor {
-    slots: Box<[Slot]>,
+    slots: NumaVec<Slot>,
     capacity: usize,
     mask: usize,
     producer_seq: AtomicU64,
@@ -63,14 +71,17 @@ unsafe impl Sync for Disruptor {}
 impl Disruptor {
     pub fn new(capacity: usize) -> Self {
         let cap = capacity.next_power_of_two();
-        let slots: Vec<Slot> = (0..cap)
-            .map(|_| Slot {
-                seq: AtomicU64::new(0),
-                data: std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit()),
-            })
-            .collect();
+        // Allocate the hot ring on node 0 (the node the data plane is pinned to),
+        // bound via posix_madvise(MADV_HUGEPAGE) so the working set stays resident locally.
+        let mut slots = NumaVec::new_on_node(0, cap);
+        let slice: &mut [Slot] = slots.as_mut_slice();
+        for s in slice.iter_mut() {
+            s.seq = AtomicU64::new(0);
+            s.data = std::cell::UnsafeCell::new(std::mem::MaybeUninit::uninit());
+            s._pad = [0u8; CACHELINE];
+        }
         Disruptor {
-            slots: slots.into_boxed_slice(),
+            slots,
             capacity: cap,
             mask: cap - 1,
             producer_seq: AtomicU64::new(1),
@@ -198,14 +209,17 @@ pub struct DualPipeline {
 
 impl DualPipeline {
     pub fn new(worker_count: usize) -> Self {
+        let cores = available_parallelism().map(|p| p.get()).unwrap_or(4);
         let count = if worker_count == 0 {
-            available_parallelism().map(|p| p.get()).unwrap_or(4).saturating_sub(1).max(2)
+            cores.saturating_sub(1).max(1)
         } else {
             worker_count
         };
+        let ring_cap = if cores < 4 { 1 << 17 } else { RING_CAPACITY };
+        let stage_cap = if cores < 4 { 1 << 14 } else { STAGE_CAPACITY };
         DualPipeline {
-            staging: Arc::new(ArrayQueue::new(STAGE_CAPACITY)),
-            disruptor: Arc::new(Disruptor::new(RING_CAPACITY)),
+            staging: Arc::new(ArrayQueue::new(stage_cap)),
+            disruptor: Arc::new(Disruptor::new(ring_cap)),
             batcher: parking_lot::Mutex::new(AdaptiveBatcher::new()),
             sequencer: Arc::new(Sequencer::new()),
             running: Arc::new(AtomicU64::new(1)),

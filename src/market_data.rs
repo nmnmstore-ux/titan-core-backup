@@ -108,7 +108,7 @@ impl MarketDataStream {
                         for ref entry in books.books.iter() {
                             let book = entry.value();
                             let pair_key = entry.key().clone();
-                            let price = book.last_price;
+                            let price = book.get_last_price();
                             if price <= 0.0 { continue; }
                             let intervals = ["1m", "5m", "15m", "1h"];
                             let now = chrono::Utc::now().timestamp_millis();
@@ -136,7 +136,7 @@ impl MarketDataStream {
                                             high: price,
                                             low: price,
                                             close: price,
-                                            volume: book.volume_24h,
+                                            volume: book.get_volume_24h(),
                                             timestamp: rounded_ts,
                                         };
                                     }
@@ -148,7 +148,7 @@ impl MarketDataStream {
                                         high: price,
                                         low: price,
                                         close: price,
-                                        volume: book.volume_24h,
+                                        volume: book.get_volume_24h(),
                                         timestamp: rounded_ts,
                                     });
                                 }

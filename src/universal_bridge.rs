@@ -229,12 +229,110 @@ impl UniversalBridge {
         self.projects.len()
     }
 
+    pub fn mark_online(&self, name: &str) {
+        if let Some(mut p) = self.projects.get_mut(name) {
+            p.status = ProjectStatus::Online;
+            p.last_seen = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+        }
+    }
+
+    pub fn mark_offline(&self, name: &str) {
+        if let Some(mut p) = self.projects.get_mut(name) {
+            p.status = ProjectStatus::Offline;
+        }
+    }
+
     pub fn total_forwarded(&self) -> u64 {
         self.total_forwarded.load(Ordering::Relaxed)
     }
 
     pub fn total_errors(&self) -> u64 {
         self.total_errors.load(Ordering::Relaxed)
+    }
+
+    // ===== Mesh Routing =====
+
+    /// Forward a command through the Mesh P2P network instead of direct HTTP.
+    /// Falls back to direct HTTP if mesh is unreachable.
+    pub async fn forward_through_mesh(
+        &self,
+        project_name: &str,
+        command_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<BridgeResponse, String> {
+        let _project = self
+            .projects
+            .get(project_name)
+            .ok_or_else(|| format!("project not found: {}", project_name))?
+            .clone();
+
+        let mesh_url = std::env::var("THE_BRIDGE_MESH_URL")
+            .unwrap_or_else(|_| "http://localhost:9777".to_string());
+
+        let mesh_payload = serde_json::json!({
+            "message_type": "BridgeForward",
+            "target": project_name,
+            "command_type": command_type,
+            "payload": payload,
+            "from": "the-bridge-master",
+        });
+
+        let start = Instant::now();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("reqwest client: {}", e))?;
+
+        let response = client
+            .post(format!("{}/api/v1/mesh/forward", mesh_url))
+            .json(&mesh_payload)
+            .send()
+            .await
+            .map_err(|e| format!("mesh forward failed: {}", e))?;
+
+        let duration_us = start.elapsed().as_micros() as u64;
+        let result: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| format!("mesh response parse: {}", e))?;
+
+        // Update project stats
+        if let Some(mut p) = self.projects.get_mut(project_name) {
+            p.total_routed += 1;
+            p.last_seen = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            p.status = ProjectStatus::Online;
+        }
+        self.total_forwarded.fetch_add(1, Ordering::Relaxed);
+
+        Ok(BridgeResponse {
+            project: project_name.to_string(),
+            status: "ok".to_string(),
+            result,
+            duration_us,
+        })
+    }
+
+    /// Forward through mesh with automatic HTTP fallback.
+    pub async fn route_to_project(
+        &self,
+        project_name: &str,
+        command_type: &str,
+        payload: serde_json::Value,
+    ) -> Result<BridgeResponse, String> {
+        // Try mesh first
+        match self.forward_through_mesh(project_name, command_type, payload.clone()).await {
+            Ok(resp) => Ok(resp),
+            Err(_) => {
+                // Fallback to direct HTTP
+                self.forward_to_project(project_name, command_type, payload).await
+            }
+        }
     }
 
     pub fn snapshot(&self) -> serde_json::Value {

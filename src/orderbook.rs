@@ -17,6 +17,64 @@ pub fn price_key(price: f64) -> i64 {
     (price * PRICE_MULTIPLIER as f64).round() as i64
 }
 
+pub const ORDER_BOOK_SHARDS: usize = 16;
+const SHARD_MASK: usize = ORDER_BOOK_SHARDS - 1;
+
+fn shard_index(id: &Uuid) -> usize {
+    (id.as_u128() as u64 as usize) & SHARD_MASK
+}
+
+fn store_f64(atomic: &AtomicU64, val: f64) {
+    atomic.store(val.to_bits(), AtomicOrdering::Relaxed);
+}
+
+fn load_f64(atomic: &AtomicU64) -> f64 {
+    f64::from_bits(atomic.load(AtomicOrdering::Relaxed))
+}
+
+fn fetch_add_f64(atomic: &AtomicU64, val: f64) -> f64 {
+    loop {
+        let cur = atomic.load(AtomicOrdering::Relaxed);
+        let cur_f = f64::from_bits(cur);
+        let new_f = cur_f + val;
+        if atomic.compare_exchange_weak(cur, new_f.to_bits(), AtomicOrdering::Relaxed, AtomicOrdering::Relaxed).is_ok() {
+            return new_f;
+        }
+    }
+}
+
+fn fetch_max_f64(atomic: &AtomicU64, val: f64) {
+    let bits = val.to_bits();
+    loop {
+        let cur = atomic.load(AtomicOrdering::Relaxed);
+        if bits <= cur { break; }
+        if atomic.compare_exchange_weak(cur, bits, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed).is_ok() { break; }
+    }
+}
+
+fn fetch_min_f64(atomic: &AtomicU64, val: f64) {
+    let bits = val.to_bits();
+    loop {
+        let cur = atomic.load(AtomicOrdering::Relaxed);
+        if bits >= cur { break; }
+        if atomic.compare_exchange_weak(cur, bits, AtomicOrdering::Relaxed, AtomicOrdering::Relaxed).is_ok() { break; }
+    }
+}
+
+struct OrderBookShard {
+    bids: parking_lot::RwLock<BTreeMap<i64, VecDeque<Order>>>,
+    asks: parking_lot::RwLock<BTreeMap<i64, VecDeque<Order>>>,
+}
+
+impl OrderBookShard {
+    fn new() -> Self {
+        Self {
+            bids: parking_lot::RwLock::new(BTreeMap::new()),
+            asks: parking_lot::RwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
 struct BatchAuctionState {
     orders: Vec<Order>,
     deadline: Instant,
@@ -66,34 +124,447 @@ pub struct OrderBookManager {
     pub user_trades: DashMap<Uuid, Vec<Trade>>,
 }
 
-#[allow(dead_code)]
+/// Per-pair sharded order book.
 pub struct OrderBook {
     pub pair: CompactString,
-    pub bids: BTreeMap<i64, VecDeque<Order>>,
-    pub asks: BTreeMap<i64, VecDeque<Order>>,
-    pub trades: Vec<Trade>,
+    shards: Vec<OrderBookShard>,
+    pub trades: parking_lot::Mutex<Vec<Trade>>,
     pub trades_enabled: AtomicBool,
-    pub last_price: f64,
-    pub high_24h: f64,
-    pub low_24h: f64,
-    pub volume_24h: f64,
-    pub open_24h: f64,
+    last_price: AtomicU64,
+    high_24h: AtomicU64,
+    low_24h: AtomicU64,
+    volume_24h: AtomicU64,
+    open_24h: AtomicU64,
 }
 
 impl OrderBook {
-    fn new(pair: &str) -> Self {
+    pub fn new(pair: &str) -> Self {
+        let mut shards = Vec::with_capacity(ORDER_BOOK_SHARDS);
+        for _ in 0..ORDER_BOOK_SHARDS {
+            shards.push(OrderBookShard::new());
+        }
         Self {
             pair: CompactString::from(pair),
-            bids: BTreeMap::new(),
-            asks: BTreeMap::new(),
-            trades: Vec::with_capacity(4096),
+            shards,
+            trades: parking_lot::Mutex::new(Vec::with_capacity(4096)),
             trades_enabled: AtomicBool::new(false),
-            last_price: 0.0,
-            high_24h: 0.0,
-            low_24h: f64::MAX,
-            volume_24h: 0.0,
-            open_24h: 0.0,
+            last_price: AtomicU64::new(0u64.to_le()),
+            high_24h: AtomicU64::new(0u64.to_le()),
+            low_24h: AtomicU64::new(f64::MAX.to_bits()),
+            volume_24h: AtomicU64::new(0u64.to_le()),
+            open_24h: AtomicU64::new(0u64.to_le()),
         }
+    }
+
+    pub fn get_last_price(&self) -> f64 { load_f64(&self.last_price) }
+    pub fn get_high_24h(&self) -> f64 { load_f64(&self.high_24h) }
+    pub fn get_low_24h(&self) -> f64 { load_f64(&self.low_24h) }
+    pub fn get_volume_24h(&self) -> f64 { load_f64(&self.volume_24h) }
+    pub fn get_open_24h(&self) -> f64 { load_f64(&self.open_24h) }
+
+    fn update_aggregates(&self, price: f64, qty: f64) {
+        store_f64(&self.last_price, price);
+        fetch_max_f64(&self.high_24h, price);
+        fetch_min_f64(&self.low_24h, price);
+        fetch_add_f64(&self.volume_24h, qty);
+        let cur = self.open_24h.load(AtomicOrdering::Relaxed);
+        if cur == 0u64 || f64::from_bits(cur) == 0.0 {
+            let _ = self.open_24h.compare_exchange(cur, price.to_bits(), AtomicOrdering::Relaxed, AtomicOrdering::Relaxed);
+        }
+    }
+
+    pub fn insert_bid(&self, price_key: i64, order: Order) {
+        let idx = shard_index(&order.id);
+        self.shards[idx].bids.write().entry(price_key).or_default().push_back(order);
+    }
+
+    pub fn insert_ask(&self, price_key: i64, order: Order) {
+        let idx = shard_index(&order.id);
+        self.shards[idx].asks.write().entry(price_key).or_default().push_back(order);
+    }
+
+    pub fn match_order(&self, order: &Order, check: &dyn Fn(&Order, &Order) -> bool) -> (Vec<Trade>, f64) {
+        let mut trades: Vec<Trade> = Vec::new();
+        let mut remaining = order.quantity;
+
+        match order.side {
+            OrderSide::Buy => {
+                let mut ask_guards: Vec<_> = self.shards.iter().map(|s| s.asks.write()).collect();
+                Self::execute_match_loop(&mut ask_guards, order, check, &mut trades, &mut remaining, true);
+                drop(ask_guards);
+            }
+            OrderSide::Sell => {
+                let mut bid_guards: Vec<_> = self.shards.iter().map(|s| s.bids.write()).collect();
+                Self::execute_match_loop(&mut bid_guards, order, check, &mut trades, &mut remaining, false);
+                drop(bid_guards);
+            }
+        }
+
+        if let Some(t) = trades.last() {
+            let total_qty: f64 = trades.iter().map(|t| t.quantity).sum();
+            self.update_aggregates(t.price, total_qty);
+            if self.trades_enabled.load(AtomicOrdering::Relaxed) {
+                let mut ts = self.trades.lock();
+                for t in &trades { ts.push(t.clone()); }
+            }
+        }
+
+        (trades, remaining)
+    }
+
+    fn execute_match_loop(
+        guards: &mut [parking_lot::RwLockWriteGuard<BTreeMap<i64, VecDeque<Order>>>],
+        order: &Order,
+        check: &dyn Fn(&Order, &Order) -> bool,
+        trades: &mut Vec<Trade>,
+        remaining: &mut f64,
+        is_buy: bool,
+    ) {
+        while *remaining > 0.0 {
+            let best_key = if is_buy {
+                guards.iter().filter_map(|g| g.first_key_value().map(|(k, _)| *k)).min()
+            } else {
+                guards.iter().filter_map(|g| g.last_key_value().map(|(k, _)| *k)).max()
+            };
+
+            let key = match best_key { Some(k) => k, None => break };
+
+            let maker_price = guards.iter()
+                .find_map(|g| g.get(&key).and_then(|l| l.front().map(|o| o.price)))
+                .unwrap_or(0.0);
+
+            let matched = if is_buy { order.price >= maker_price } else { order.price <= maker_price };
+            if !matched { break; }
+
+            let mut maker = None;
+            let mut maker_shard = 0;
+
+            for (si, guard) in guards.iter_mut().enumerate() {
+                if let Some(orders) = guard.get_mut(&key) {
+                    let mut temp: VecDeque<Order> = VecDeque::new();
+                    while let Some(front) = orders.pop_front() {
+                        if check(order, &front) { maker = Some(front); maker_shard = si; break; }
+                        temp.push_back(front);
+                    }
+                    while let Some(o) = temp.pop_front() { orders.push_back(o); }
+                    if maker.is_some() {
+                        if orders.is_empty() { guard.remove(&key); }
+                        break;
+                    }
+                    if orders.is_empty() { guard.remove(&key); }
+                }
+            }
+
+            let mut maker = match maker {
+                Some(m) => m,
+                None => {
+                    for guard in guards.iter_mut() { guard.remove(&key); }
+                    continue;
+                }
+            };
+
+            if let Some(floor) = maker.hard_floor {
+                let violates = match maker.side {
+                    OrderSide::Buy => maker_price > floor,
+                    OrderSide::Sell => maker_price < floor,
+                };
+                if violates {
+                    if maker.remaining > 0.0 {
+                        let si = shard_index(&maker.id);
+                        guards[si].entry(key).or_default().push_front(maker);
+                    }
+                    continue;
+                }
+            }
+
+            let fill_qty = (*remaining).min(maker.remaining);
+            let price = maker.price;
+
+            let trade = Trade {
+                id: ID_POOL.next_id(),
+                buy_order_id: if order.side == OrderSide::Buy { order.id } else { maker.id },
+                sell_order_id: if order.side == OrderSide::Sell { order.id } else { maker.id },
+                pair: order.pair.clone(),
+                price,
+                quantity: fill_qty,
+                total: price * fill_qty,
+                buy_user_id: if order.side == OrderSide::Buy { order.user_id } else { maker.user_id },
+                sell_user_id: if order.side == OrderSide::Sell { order.user_id } else { maker.user_id },
+                timestamp: crate::time_cache::fast_now_ms(),
+                dot_settled: false,
+                tee_notarized: false,
+            };
+
+            trades.push(trade);
+            *remaining -= fill_qty;
+            maker.remaining -= fill_qty;
+
+            if maker.remaining <= 0.0 {
+                if let OrderStyle::Iceberg { display_quantity } = maker.style {
+                    if maker.hidden_remaining > 0.0 {
+                        let slice = maker.hidden_remaining.min(display_quantity);
+                        maker.hidden_remaining -= slice;
+                        maker.remaining = slice;
+                    }
+                }
+            }
+
+            if maker.remaining > 0.0 {
+                let si = shard_index(&maker.id);
+                guards[si].entry(key).or_default().push_front(maker);
+            } else if *remaining > 0.0 {
+                for guard in guards.iter_mut() {
+                    if let Some(orders) = guard.get(&key) {
+                        if orders.is_empty() { guard.remove(&key); }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn execute_market_internal(&self, mut order: Order, check: &dyn Fn(&Order, &Order) -> bool) -> Result<PlaceOrderResult, String> {
+        let mut trades: Vec<Trade> = Vec::new();
+        let mut remaining = order.quantity;
+
+        match order.side {
+            OrderSide::Buy => {
+                let mut ask_guards: Vec<_> = self.shards.iter().map(|s| s.asks.write()).collect();
+                Self::execute_market_loop(&mut ask_guards, &order, check, &mut trades, &mut remaining, true);
+                drop(ask_guards);
+            }
+            OrderSide::Sell => {
+                let mut bid_guards: Vec<_> = self.shards.iter().map(|s| s.bids.write()).collect();
+                Self::execute_market_loop(&mut bid_guards, &order, check, &mut trades, &mut remaining, false);
+                drop(bid_guards);
+            }
+        }
+
+        if let Some(t) = trades.last() {
+            self.update_aggregates(t.price, t.quantity);
+            order.price = t.price;
+            if self.trades_enabled.load(AtomicOrdering::Relaxed) {
+                let mut ts = self.trades.lock();
+                for t in &trades { ts.push(t.clone()); }
+            }
+        }
+
+        let total_filled = order.quantity - remaining;
+        order.filled = total_filled;
+        order.remaining = remaining;
+        order.status = if remaining <= 0.0 { OrderStatus::Filled } else { OrderStatus::PartiallyFilled };
+        Ok(PlaceOrderResult { order, trades, remaining })
+    }
+
+    fn execute_market_loop(
+        guards: &mut [parking_lot::RwLockWriteGuard<BTreeMap<i64, VecDeque<Order>>>],
+        order: &Order,
+        check: &dyn Fn(&Order, &Order) -> bool,
+        trades: &mut Vec<Trade>,
+        remaining: &mut f64,
+        is_buy: bool,
+    ) {
+        while *remaining > 0.0 {
+            let best_key = if is_buy {
+                guards.iter().filter_map(|g| g.first_key_value().map(|(k, _)| *k)).min()
+            } else {
+                guards.iter().filter_map(|g| g.last_key_value().map(|(k, _)| *k)).max()
+            };
+
+            let key = match best_key { Some(k) => k, None => break };
+
+            let mut maker = None;
+            let mut maker_shard = 0;
+
+            for (si, guard) in guards.iter_mut().enumerate() {
+                if let Some(orders) = guard.get_mut(&key) {
+                    let mut temp: VecDeque<Order> = VecDeque::new();
+                    while let Some(front) = orders.pop_front() {
+                        if check(order, &front) { maker = Some(front); maker_shard = si; break; }
+                        temp.push_back(front);
+                    }
+                    while let Some(o) = temp.pop_front() { orders.push_back(o); }
+                    if maker.is_some() {
+                        if orders.is_empty() { guard.remove(&key); }
+                        break;
+                    }
+                    if orders.is_empty() { guard.remove(&key); }
+                }
+            }
+
+            let mut maker = match maker {
+                Some(m) => m,
+                None => {
+                    for guard in guards.iter_mut() { guard.remove(&key); }
+                    continue;
+                }
+            };
+
+            let fill_qty = (*remaining).min(maker.remaining);
+            let price = maker.price;
+
+            if let Some(floor) = order.hard_floor {
+                let violates = match order.side {
+                    OrderSide::Buy => price > floor,
+                    OrderSide::Sell => price < floor,
+                };
+                if violates { break; }
+            }
+            if let Some(floor) = maker.hard_floor {
+                let violates = match maker.side {
+                    OrderSide::Buy => price > floor,
+                    OrderSide::Sell => price < floor,
+                };
+                if violates {
+                    if maker.remaining > 0.0 {
+                        let si = shard_index(&maker.id);
+                        guards[si].entry(key).or_default().push_front(maker);
+                    }
+                    continue;
+                }
+            }
+
+            let trade = Trade {
+                id: ID_POOL.next_id(),
+                buy_order_id: if order.side == OrderSide::Buy { order.id } else { maker.id },
+                sell_order_id: if order.side == OrderSide::Sell { order.id } else { maker.id },
+                pair: order.pair.clone(),
+                price,
+                quantity: fill_qty,
+                total: price * fill_qty,
+                buy_user_id: if order.side == OrderSide::Buy { order.user_id } else { maker.user_id },
+                sell_user_id: if order.side == OrderSide::Sell { order.user_id } else { maker.user_id },
+                timestamp: crate::time_cache::fast_now_ms(),
+                dot_settled: false,
+                tee_notarized: false,
+            };
+
+            trades.push(trade);
+            *remaining -= fill_qty;
+            maker.remaining -= fill_qty;
+
+            if maker.remaining <= 0.0 {
+                if let OrderStyle::Iceberg { display_quantity } = maker.style {
+                    if maker.hidden_remaining > 0.0 {
+                        let slice = maker.hidden_remaining.min(display_quantity);
+                        maker.hidden_remaining -= slice;
+                        maker.remaining = slice;
+                    }
+                }
+            }
+
+            if maker.remaining > 0.0 {
+                let si = shard_index(&maker.id);
+                guards[si].entry(key).or_default().push_front(maker);
+            } else if *remaining > 0.0 {
+                for guard in guards.iter_mut() {
+                    if let Some(orders) = guard.get(&key) {
+                        if orders.is_empty() { guard.remove(&key); }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn remove_order(&self, id: Uuid) -> bool {
+        for shard in &self.shards {
+            {
+                let mut bids = shard.bids.write();
+                for orders in bids.values_mut() {
+                    if let Some(pos) = orders.iter().position(|o| o.id == id) {
+                        orders.remove(pos);
+                        return true;
+                    }
+                }
+            }
+            {
+                let mut asks = shard.asks.write();
+                for orders in asks.values_mut() {
+                    if let Some(pos) = orders.iter().position(|o| o.id == id) {
+                        orders.remove(pos);
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn find_order(&self, id: Uuid) -> Option<Order> {
+        for shard in &self.shards {
+            {
+                let bids = shard.bids.read();
+                for orders in bids.values() {
+                    if let Some(o) = orders.iter().find(|o| o.id == id) { return Some(o.clone()); }
+                }
+            }
+            {
+                let asks = shard.asks.read();
+                for orders in asks.values() {
+                    if let Some(o) = orders.iter().find(|o| o.id == id) { return Some(o.clone()); }
+                }
+            }
+        }
+        None
+    }
+
+    fn best_bid_price(&self) -> f64 {
+        let mut best = 0u64;
+        for shard in &self.shards {
+            let bids = shard.bids.read();
+            if let Some((_, orders)) = bids.last_key_value() {
+                if let Some(front) = orders.front() {
+                    let bits = front.price.to_bits();
+                    if bits > best { best = bits; }
+                }
+            }
+        }
+        f64::from_bits(best)
+    }
+
+    fn best_ask_price(&self) -> f64 {
+        let mut best = f64::MAX.to_bits();
+        for shard in &self.shards {
+            let asks = shard.asks.read();
+            if let Some((_, orders)) = asks.first_key_value() {
+                if let Some(front) = orders.front() {
+                    let bits = front.price.to_bits();
+                    if bits < best { best = bits; }
+                }
+            }
+        }
+        if best == f64::MAX.to_bits() { 0.0 } else { f64::from_bits(best) }
+    }
+
+    fn bid_count(&self) -> usize {
+        let mut count = 0;
+        for shard in &self.shards {
+            count += shard.bids.read().values().map(|v| v.len()).sum::<usize>();
+        }
+        count
+    }
+
+    fn ask_count(&self) -> usize {
+        let mut count = 0;
+        for shard in &self.shards {
+            count += shard.asks.read().values().map(|v| v.len()).sum::<usize>();
+        }
+        count
+    }
+
+    pub fn snapshot_orders(&self) -> (Vec<(i64, Vec<Order>)>, Vec<(i64, Vec<Order>)>) {
+        let mut bids: Vec<(i64, Vec<Order>)> = Vec::new();
+        let mut asks: Vec<(i64, Vec<Order>)> = Vec::new();
+        for shard in &self.shards {
+            for (k, orders) in shard.bids.read().iter() {
+                bids.push((*k, orders.iter().cloned().collect()));
+            }
+            for (k, orders) in shard.asks.read().iter() {
+                asks.push((*k, orders.iter().cloned().collect()));
+            }
+        }
+        bids.sort_by_key(|(k, _)| *k);
+        asks.sort_by_key(|(k, _)| *k);
+        (bids, asks)
     }
 }
 
@@ -145,7 +616,6 @@ impl OrderBookManager {
         self.total_orders.fetch_add(1, AtomicOrdering::Relaxed);
         let key: String = order.pair.as_str().to_uppercase();
 
-        // StopLoss: store in pending list, not in order book
         if let OrderStyle::StopLoss { .. } = order.style {
             self.stop_losses.entry(key).or_default().push(order.clone());
             let qty = order.quantity;
@@ -154,7 +624,6 @@ impl OrderBookManager {
             return Ok(result);
         }
 
-        // TWAP: store for background scheduler
         if let OrderStyle::TWAP { duration_secs, interval_secs } = order.style {
             let qty = order.quantity;
             let slices = if interval_secs > 0 { duration_secs / interval_secs } else { 1 };
@@ -164,7 +633,7 @@ impl OrderBookManager {
                 total_quantity: qty,
                 filled_quantity: 0.0,
                 interval_secs,
-                next_slice_time: chrono::Utc::now().timestamp_millis() + (interval_secs as i64 * 1000),
+                next_slice_time: crate::time_cache::fast_now_ms() + (interval_secs as i64 * 1000),
                 slice_size,
                 slices_remaining: slices,
             };
@@ -191,7 +660,7 @@ impl OrderBookManager {
                 PlaceOrderResult { order, trades: vec![], remaining: qty }
             }
             MatchingMode::Continuous => {
-                let mut book = self.books.get_mut(&key).ok_or_else(|| "pair not found".to_string())?;
+                let book = self.books.get(&key).ok_or_else(|| "pair not found".to_string())?;
 
                 let check = |buy: &Order, sell: &Order| -> bool {
                     match &self.counterparty_visibility {
@@ -199,33 +668,15 @@ impl OrderBookManager {
                         None => true,
                     }
                 };
-                let (trades, remaining) = MatchingEngine::match_order(&mut book, &order, &check);
+                let (trades, remaining) = MatchingEngine::match_order(&book, &order, &check);
 
                 self.total_trades.fetch_add(trades.len() as u64, AtomicOrdering::Relaxed);
-
-                if book.trades_enabled.load(AtomicOrdering::Relaxed) {
-                    for t in &trades {
-                        book.trades.push(t.clone());
-                    }
-                }
-
-                for t in &trades {
-                    book.last_price = t.price;
-                    if t.price > book.high_24h { book.high_24h = t.price; }
-                    if t.price < book.low_24h { book.low_24h = t.price; }
-                    book.volume_24h += t.quantity;
-                    if book.open_24h == 0.0 { book.open_24h = t.price; }
-                }
 
                 if remaining > 0.0 {
                     let p_key = price_key(order.price);
                     match order.side {
-                        OrderSide::Buy => {
-                            book.bids.entry(p_key).or_default().push_back(order.clone());
-                        }
-                        OrderSide::Sell => {
-                            book.asks.entry(p_key).or_default().push_back(order.clone());
-                        }
+                        OrderSide::Buy => { book.insert_bid(p_key, order.clone()); }
+                        OrderSide::Sell => { book.insert_ask(p_key, order.clone()); }
                     }
                 }
 
@@ -246,7 +697,7 @@ impl OrderBookManager {
 
     fn execute_batch_auction(&self, pair: &str) -> Result<PlaceOrderResult, String> {
         let mut state = self.auction_state.get_mut(pair).ok_or_else(|| "no batch state".to_string())?;
-        let mut book = self.books.get_mut(pair).ok_or_else(|| "pair not found".to_string())?;
+        let book = self.books.get(pair).ok_or_else(|| "pair not found".to_string())?;
 
         let check = |buy: &Order, sell: &Order| -> bool {
             match &self.counterparty_visibility {
@@ -258,27 +709,16 @@ impl OrderBookManager {
         let window_number = state.window_number;
         let jitter = state.jitter_range_micros;
         let (trades, remaining_orders) = MatchingEngine::execute_batch_auction(
-            &mut book,
-            &mut state.orders,
-            window_number,
-            &check,
-            jitter,
+            &book, &mut state.orders, window_number, &check, jitter,
         );
 
-        // Update book stats
-        if !trades.is_empty() {
-            book.last_price = trades.last().map(|t| t.price).unwrap_or(book.last_price);
-            for t in &trades {
-                if t.price > book.high_24h { book.high_24h = t.price; }
-                if t.price < book.low_24h { book.low_24h = t.price; }
-                book.volume_24h += t.quantity;
-            }
+        if let Some(t) = trades.last() {
+            book.update_aggregates(t.price, t.quantity);
         }
 
         if book.trades_enabled.load(AtomicOrdering::Relaxed) {
-            for t in &trades {
-                book.trades.push(t.clone());
-            }
+            let mut ts = book.trades.lock();
+            for t in &trades { ts.push(t.clone()); }
         }
 
         self.total_trades.fetch_add(trades.len() as u64, AtomicOrdering::Relaxed);
@@ -287,8 +727,9 @@ impl OrderBookManager {
 
         Ok(PlaceOrderResult {
             order: Order {
-            client_order_id: None,
-            filled_quantity: 0,
+                id_tag: 0,
+                client_order_id: None,
+                filled_quantity: 0,
                 id: Uuid::nil(),
                 user_id: Uuid::nil(),
                 pair: CompactString::from(pair),
@@ -299,7 +740,7 @@ impl OrderBookManager {
                 filled: 0.0,
                 remaining: 0.0,
                 status: OrderStatus::Filled,
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: crate::time_cache::fast_now_ms(),
                 ttl_ms: None,
                 is_swap: false,
                 swap_target_currency: None,
@@ -319,7 +760,6 @@ impl OrderBookManager {
     }
 
     pub fn cancel_order(&self, id: Uuid) -> Result<(), String> {
-        // Check stop-loss orders
         for mut entry in self.stop_losses.iter_mut() {
             let orders = entry.value_mut();
             if let Some(pos) = orders.iter().position(|o| o.id == id) {
@@ -327,55 +767,26 @@ impl OrderBookManager {
                 return Ok(());
             }
         }
-        // Check TWAP orders
         if self.twap_orders.remove(&id).is_some() {
             return Ok(());
         }
-        // Check order book
-        for mut entry in self.books.iter_mut() {
-            let book = entry.value_mut();
-            for (_, orders) in book.bids.iter_mut() {
-                if let Some(pos) = orders.iter().position(|o| o.id == id) {
-                    orders.remove(pos);
-                    return Ok(());
-                }
-            }
-            for (_, orders) in book.asks.iter_mut() {
-                if let Some(pos) = orders.iter().position(|o| o.id == id) {
-                    orders.remove(pos);
-                    return Ok(());
-                }
-            }
+        for entry in self.books.iter() {
+            if entry.value().remove_order(id) { return Ok(()); }
         }
         Err("order not found".to_string())
     }
 
     pub fn get_order(&self, id: Uuid) -> Option<Order> {
-        // Check stop-loss orders
         for entry in self.stop_losses.iter() {
             for o in entry.value() {
-                if o.id == id {
-                    return Some(o.clone());
-                }
+                if o.id == id { return Some(o.clone()); }
             }
         }
-        // Check TWAP orders
         if let Some(state) = self.twap_orders.get(&id) {
             return Some(state.order.clone());
         }
-        // Check order book
         for entry in self.books.iter() {
-            let book = entry.value();
-            for orders in book.bids.values() {
-                if let Some(o) = orders.iter().find(|o| o.id == id) {
-                    return Some(o.clone());
-                }
-            }
-            for orders in book.asks.values() {
-                if let Some(o) = orders.iter().find(|o| o.id == id) {
-                    return Some(o.clone());
-                }
-            }
+            if let Some(o) = entry.value().find_order(id) { return Some(o); }
         }
         None
     }
@@ -383,17 +794,17 @@ impl OrderBookManager {
     pub fn get_book_summary(&self, pair: &str) -> Option<OrderBookSummary> {
         let key = pair.to_uppercase();
         self.books.get(&key).map(|book| {
-            let best_bid = book.bids.last_key_value().and_then(|(_, v)| v.front()).map(|o| o.price).unwrap_or(0.0);
-            let best_ask = book.asks.first_key_value().and_then(|(_, v)| v.front()).map(|o| o.price).unwrap_or(0.0);
+            let best_bid = book.best_bid_price();
+            let best_ask = book.best_ask_price();
             let spread_pct = if best_bid > 0.0 { ((best_ask - best_bid) / best_bid) * 100.0 } else { 0.0 };
             OrderBookSummary {
                 pair: CompactString::from(key),
                 best_bid,
                 best_ask,
-                last_price: book.last_price,
-                volume_24h: book.volume_24h,
-                bid_count: book.bids.values().map(|v| v.len()).sum(),
-                ask_count: book.asks.values().map(|v| v.len()).sum(),
+                last_price: book.get_last_price(),
+                volume_24h: book.get_volume_24h(),
+                bid_count: book.bid_count(),
+                ask_count: book.ask_count(),
                 spread_pct,
             }
         })
@@ -402,16 +813,39 @@ impl OrderBookManager {
     pub fn get_depth(&self, pair: &str, levels: usize) -> Option<MarketDepth> {
         let key = pair.to_uppercase();
         self.books.get(&key).map(|book| {
-            let bids: Vec<DepthLevel> = book.bids.iter().rev().take(levels).map(|(_, orders)| {
-                let price = orders.front().map(|o| o.price).unwrap_or(0.0);
-                let qty: f64 = orders.iter().map(|o| o.remaining).sum();
-                DepthLevel { price, quantity: qty, order_count: orders.len() as u32 }
+            let mut bids_merged: BTreeMap<i64, (f64, f64, u32)> = BTreeMap::new();
+            let mut asks_merged: BTreeMap<i64, (f64, f64, u32)> = BTreeMap::new();
+
+            for shard in &book.shards {
+                let b = shard.bids.read();
+                for (k, orders) in b.iter() {
+                    let price = orders.front().map(|o| o.price).unwrap_or(0.0);
+                    let qty: f64 = orders.iter().map(|o| o.remaining).sum();
+                    let entry = bids_merged.entry(*k).or_insert((price, 0.0, 0));
+                    entry.1 += qty;
+                    entry.2 += orders.len() as u32;
+                }
+            }
+
+            for shard in &book.shards {
+                let a = shard.asks.read();
+                for (k, orders) in a.iter() {
+                    let price = orders.front().map(|o| o.price).unwrap_or(0.0);
+                    let qty: f64 = orders.iter().map(|o| o.remaining).sum();
+                    let entry = asks_merged.entry(*k).or_insert((price, 0.0, 0));
+                    entry.1 += qty;
+                    entry.2 += orders.len() as u32;
+                }
+            }
+
+            let bids: Vec<DepthLevel> = bids_merged.iter().rev().take(levels).map(|(_, &(price, qty, count))| {
+                DepthLevel { price, quantity: qty, order_count: count }
             }).collect();
-            let asks: Vec<DepthLevel> = book.asks.iter().take(levels).map(|(_, orders)| {
-                let price = orders.front().map(|o| o.price).unwrap_or(0.0);
-                let qty: f64 = orders.iter().map(|o| o.remaining).sum();
-                DepthLevel { price, quantity: qty, order_count: orders.len() as u32 }
+
+            let asks: Vec<DepthLevel> = asks_merged.iter().take(levels).map(|(_, &(price, qty, count))| {
+                DepthLevel { price, quantity: qty, order_count: count }
             }).collect();
+
             MarketDepth { pair: CompactString::from(key), bids, asks }
         })
     }
@@ -419,17 +853,17 @@ impl OrderBookManager {
     pub fn get_ticker(&self, pair: &str) -> Option<Ticker> {
         let key = pair.to_uppercase();
         self.books.get(&key).map(|book| {
-            let bid = book.bids.last_key_value().and_then(|(_, v)| v.front()).map(|o| o.price).unwrap_or(0.0);
-            let ask = book.asks.first_key_value().and_then(|(_, v)| v.front()).map(|o| o.price).unwrap_or(0.0);
-            let change = if book.open_24h > 0.0 { ((book.last_price - book.open_24h) / book.open_24h) * 100.0 } else { 0.0 };
+            let bid = book.best_bid_price();
+            let ask = book.best_ask_price();
+            let last = book.get_last_price();
+            let open = book.get_open_24h();
+            let change = if open > 0.0 { ((last - open) / open) * 100.0 } else { 0.0 };
             Ticker {
                 pair: CompactString::from(key),
-                bid,
-                ask,
-                last: book.last_price,
-                high_24h: book.high_24h,
-                low_24h: book.low_24h,
-                volume_24h: book.volume_24h,
+                bid, ask, last,
+                high_24h: book.get_high_24h(),
+                low_24h: book.get_low_24h(),
+                volume_24h: book.get_volume_24h(),
                 change_24h_pct: change,
             }
         })
@@ -451,9 +885,7 @@ impl OrderBookManager {
             let now = std::time::Instant::now();
             let remaining = if now < s.deadline {
                 (s.deadline - now).as_micros() as u64
-            } else {
-                0u64
-            };
+            } else { 0u64 };
             serde_json::json!({
                 "window_ns": s.window_ns,
                 "jitter_range_micros": s.jitter_range_micros,
@@ -467,14 +899,10 @@ impl OrderBookManager {
     pub fn execute_batch_auction_manual(&self, pair: &str) -> Result<(), String> {
         let key = pair.to_uppercase();
         let deadline_passed = self.auction_state.get(&key).map_or(false, |s| Instant::now() >= s.deadline);
-        if deadline_passed {
-            self.execute_batch_auction(&key)?;
-        }
+        if deadline_passed { self.execute_batch_auction(&key)?; }
         Ok(())
     }
 
-    /// Check and execute triggered stop-loss orders after a trade.
-    /// Returns the stop-loss orders that were triggered and placed into the book.
     pub fn check_stop_losses(&self, pair: &str, last_price: f64) -> Vec<Order> {
         let key = pair.to_uppercase();
         let mut triggered = Vec::new();
@@ -482,35 +910,24 @@ impl OrderBookManager {
             let mut remaining = Vec::new();
             for mut sl in entry.drain(..) {
                 let should_trigger = match sl.style {
-                    OrderStyle::StopLoss { trigger_price, .. } => {
-                        match sl.side {
-                            // Buy stop: trigger when price rises to/above trigger
-                            OrderSide::Buy => last_price >= trigger_price,
-                            // Sell stop: trigger when price falls to/below trigger
-                            OrderSide::Sell => last_price <= trigger_price,
-                        }
-                    }
+                    OrderStyle::StopLoss { trigger_price, .. } => match sl.side {
+                        OrderSide::Buy => last_price >= trigger_price,
+                        OrderSide::Sell => last_price <= trigger_price,
+                    },
                     _ => false,
                 };
                 if should_trigger {
                     sl.status = OrderStatus::New;
                     sl.style = OrderStyle::Standard;
-                    // Convert to market order at trigger
                     sl.order_type = OrderType::Market;
                     triggered.push(sl);
-                } else {
-                    remaining.push(sl);
-                }
+                } else { remaining.push(sl); }
             }
-            if !remaining.is_empty() {
-                *entry = remaining;
-            }
+            if !remaining.is_empty() { *entry = remaining; }
         }
         triggered
     }
 
-    /// Execute a TWAP slice if its interval has elapsed.
-    /// Returns Some(order) if a slice should be placed.
     pub fn process_twap(&self, now_ms: i64) -> Vec<Order> {
         let mut slices = Vec::new();
         let mut to_remove = Vec::new();
@@ -519,7 +936,7 @@ impl OrderBookManager {
             if now_ms >= state.next_slice_time && state.slices_remaining > 0 {
                 let mut slice = state.order.clone();
                 let qty = state.slice_size.min(state.total_quantity - state.filled_quantity);
-                slice.id = Uuid::new_v4();
+                slice.id = ID_POOL.next_id();
                 slice.quantity = qty;
                 slice.remaining = qty;
                 slice.status = OrderStatus::New;
@@ -535,9 +952,7 @@ impl OrderBookManager {
                 }
             }
         }
-        for id in to_remove {
-            self.twap_orders.remove(&id);
-        }
+        for id in to_remove { self.twap_orders.remove(&id); }
         slices
     }
 }

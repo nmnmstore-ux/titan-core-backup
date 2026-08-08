@@ -1,13 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-#[path = "../src/cloak.rs"]
-mod cloak;
-#[path = "../src/snapshot.rs"]
-mod snapshot;
-
-use cloak::{SovereignKillSwitch, NodeCloakingProtocol, CloakSignal, ThreatAnalyzer, ThreatLevel};
-use snapshot::EngineSnapshot;
+use the_bridge_matching_engine::cloak::{SovereignKillSwitch, NodeCloakingProtocol, CloakSignal, ThreatAnalyzer, ThreatLevel};
+use the_bridge_matching_engine::snapshot::EngineSnapshot;
 
 #[test]
 fn test_threat_analyzer_green() {

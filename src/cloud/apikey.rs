@@ -83,12 +83,17 @@ impl ApiKeyManager {
             return None;
         }
         let prefix = parts[1];
+        let supplied_secret = parts[2];
         let key_id = self.by_prefix.get(prefix)?;
         let key = self.keys.get(&*key_id)?;
         if !key.active {
             return None;
         }
         if chrono::Utc::now().timestamp_millis() > key.expires_at {
+            return None;
+        }
+        let expected_hex = hex::encode(key.key_hash.as_slice());
+        if !expected_hex.eq_ignore_ascii_case(supplied_secret) {
             return None;
         }
         Some(key.clone())

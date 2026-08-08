@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+package thebridge;
+
+import "thebridge/common.proto";
+
+option optimize_for = SPEED;
+option go_package = "github.com/user/the-bridge/gen/thebridge;thebridge";
+option java_package = "com.thebridge.grpc";
+option java_multiple_files = true;
+option java_outer_classname = "FiatProto";
+
+service FiatService {
+  rpc CreateDeposit(DepositRequest) returns (DepositResponse);
+  rpc CreateWithdrawal(WithdrawalRequest) returns (WithdrawalResponse);
+  rpc ProvisionCard(CardRequest) returns (CardResponse);
+  rpc GetCardStatus(CardIdRequest) returns (CardStatusResponse);
+  rpc GetTransactionHistory(HistoryRequest) returns (TransactionHistoryResponse);
+}
+
+enum DepositMethod {
+  DEPOSIT_METHOD_UNSPECIFIED = 0;
+  DEPOSIT_METHOD_BANK_TRANSFER = 1;
+  DEPOSIT_METHOD_CARD = 2;
+  DEPOSIT_METHOD_WALLET = 3;
+}
+
+message DepositRequest {
+  RequestMeta meta = 1;
+  string user_id = 2;
+  Money amount = 3;
+  DepositMethod method = 4;
+  string destination_wallet = 5;
+  string chain_id = 6;
+  string idempotency_key = 7;
+}
+
+message DepositResponse {
+  RequestMeta meta = 1;
+  string deposit_id = 2;
+  string external_reference = 3;
+  TxStatus status = 4;
+  Money net_amount = 5;
+  Money fees = 6;
+  string payment_url = 7;
+  Timestamp expires_at = 8;
+  ErrorDetail error = 9;
+}
+
+enum WithdrawalMethod {
+  WITHDRAWAL_METHOD_UNSPECIFIED = 0;
+  WITHDRAWAL_METHOD_BANK_TRANSFER = 1;
+  WITHDRAWAL_METHOD_VIRTUAL_CARD = 2;
+  WITHDRAWAL_METHOD_PHYSICAL_CARD = 3;
+  WITHDRAWAL_METHOD_MOBILE_WALLET = 4;
+}
+
+message WithdrawalRequest {
+  RequestMeta meta = 1;
+  string user_id = 2;
+  Money amount = 3;
+  WithdrawalMethod method = 4;
+  string source_wallet = 5;
+  string chain_id = 6;
+  string bank_account_id = 7;
+  string idempotency_key = 8;
+}
+
+message WithdrawalResponse {
+  RequestMeta meta = 1;
+  string withdrawal_id = 2;
+  string external_reference = 3;
+  TxStatus status = 4;
+  Money net_amount = 5;
+  Money fees = 6;
+  string tracking_number = 7;
+  Timestamp estimated_delivery = 8;
+  ErrorDetail error = 9;
+}
+
+message CardRequest {
+  RequestMeta meta = 1;
+  string user_id = 2;
+  string wallet_address = 3;
+  string chain_id = 4;
+  Money initial_load = 5;
+  string currency = 6;
+  bool contactless = 7;
+}
+
+message CardResponse {
+  RequestMeta meta = 1;
+  string card_id = 2;
+  string masked_pan = 3;
+  string token = 4;
+  CardStatus status = 5;
+  Timestamp expires_at = 6;
+  ErrorDetail error = 7;
+}
+
+message CardIdRequest {
+  string card_id = 1;
+}
+
+message CardStatusResponse {
+  RequestMeta meta = 1;
+  string card_id = 2;
+  string masked_pan = 3;
+  string brand = 4;
+  string currency = 5;
+  CardStatus status = 6;
+  bool is_active = 7;
+  Timestamp expires_at = 8;
+  ErrorDetail error = 9;
+}
+
+enum CardStatus {
+  CARD_STATUS_UNSPECIFIED = 0;
+  CARD_STATUS_PENDING = 1;
+  CARD_STATUS_ACTIVE = 2;
+  CARD_STATUS_FROZEN = 3;
+  CARD_STATUS_CANCELLED = 4;
+  CARD_STATUS_EXPIRED = 5;
+}
+
+enum TxStatus {
+  TX_STATUS_UNSPECIFIED = 0;
+  TX_STATUS_PENDING = 1;
+  TX_STATUS_CONFIRMED = 2;
+  TX_STATUS_FAILED = 3;
+  TX_STATUS_CANCELLED = 4;
+}
+
+message HistoryRequest {
+  string user_id = 1;
+  uint32 page = 2;
+  uint32 page_size = 3;
+  TxStatus filter_status = 4;
+  Timestamp start_time = 5;
+  Timestamp end_time = 6;
+}
+
+message TransactionRecord {
+  string id = 1;
+  TxStatus status = 2;
+  string type = 3;
+  Money amount = 4;
+  Money fees = 5;
+  string source = 6;
+  string destination = 7;
+  string external_reference = 8;
+  string idempotency_key = 9;
+  Timestamp created_at = 10;
+  Timestamp completed_at = 11;
+}
+
+message TransactionHistoryResponse {
+  repeated TransactionRecord transactions = 1;
+  uint32 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+}

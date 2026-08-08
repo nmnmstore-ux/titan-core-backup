@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
+use compact_str::CompactString;
 
 // We import the engine modules directly
 // In Cargo.toml add: [[test]] name = "stress_test"
@@ -15,6 +16,8 @@ use uuid::Uuid;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/counterparty.rs"]
 mod counterparty;
 #[path = "../src/orderbook.rs"]
@@ -163,6 +166,7 @@ impl OrderGenerator {
 
         Order {
             id: Uuid::new_v4(),
+            id_tag: 0,
             user_id,
             pair: CompactString::from(pair),
             order_type: OrderType::Limit,
@@ -185,6 +189,8 @@ impl OrderGenerator {
             track: Track::Compliant,
             style: OrderStyle::Standard,
             hidden_remaining: 0.0,
+            filled_quantity: 0,
+            client_order_id: None,
         }
     }
 
@@ -197,6 +203,7 @@ impl OrderGenerator {
 
         Order {
             id: Uuid::new_v4(),
+            id_tag: 0,
             user_id,
             pair: CompactString::from(pair),
             order_type: OrderType::Limit,
@@ -219,6 +226,8 @@ impl OrderGenerator {
             track: Track::Compliant,
             style: OrderStyle::Standard,
             hidden_remaining: 0.0,
+            filled_quantity: 0,
+            client_order_id: None,
         }
     }
 }

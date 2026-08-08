@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionConfig {
@@ -542,7 +541,7 @@ impl ExecutionEngine {
         if let Some(o) = orders.get_mut(&order.order_id) {
             o.filled_quantity = total_filled;
             o.remaining_quantity = order.quantity - total_filled;
-            o.status = report.status;
+            o.status = report.status.clone();
             o.updated_at = report.timestamp;
         }
 

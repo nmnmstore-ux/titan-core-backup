@@ -141,16 +141,28 @@ impl TenantManager {
         if self.by_email.contains_key(&email) {
             return Err("email already registered".into());
         }
-        let tenant = Tenant::new(name, email, tier);
+        let tenant = self.insert_tenant(name, email, tier, Uuid::new_v4());
+        Ok(tenant)
+    }
+
+    /// Register a tenant that already carries a stable id. Useful for
+    /// reproducibly wiring up a boot-time test/load tenant whose API key is
+    /// pre-provisioned. Populates the same lookups as `create_tenant`.
+    pub fn insert_tenant(&self, name: String, email: String, tier: Tier, id: Uuid) -> Tenant {
+        let mut tenant = Tenant::new(name, email, tier);
+        tenant.id = id;
+        tenant.api_key_prefix = hex::encode(&id.as_bytes()[..4]);
         let prefix = tenant.api_key_prefix.clone();
-        let id = tenant.id;
         self.tenants.insert(id, tenant);
-        let t = self.tenants.get(&id)
-            .ok_or_else(|| "tenant not found after insert".to_string())?;
-        self.by_email.insert(t.email.clone(), t.id);
-        self.by_prefix.insert(prefix, t.id);
-        let cloned = Tenant::clone(&t);
-        Ok(cloned)
+        if let Some(t) = self.tenants.get(&id) {
+            let email = t.email.clone();
+            let tid = t.id;
+            self.by_email.insert(email, tid);
+            self.by_prefix.insert(prefix, tid);
+            t.clone()
+        } else {
+            Tenant::new("ghost".into(), "ghost".into(), Tier::Free)
+        }
     }
 
     pub fn get_tenant(&self, id: &Uuid) -> Option<dashmap::mapref::one::Ref<'_, Uuid, Tenant>> {

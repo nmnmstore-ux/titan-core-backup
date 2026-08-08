@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,7 +444,7 @@ impl LiquidityEngine {
         for snapshot in snapshots.values() {
             let symbol = &snapshot.symbol;
             
-            let mut book = aggregated.entry(symbol.clone()).or_insert(AggregatedOrderBook {
+            let book = aggregated.entry(symbol.clone()).or_insert(AggregatedOrderBook {
                 symbol: symbol.clone(),
                 timestamp: snapshot.timestamp,
                 bids: vec![],

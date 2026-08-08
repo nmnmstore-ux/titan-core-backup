@@ -228,6 +228,14 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::err
 }
 
 async fn process_request(request: &str) -> String {
+    if let Some(api_key) = std::env::var("API_KEY").ok() {
+        if !request.contains(&format!("Authorization: {}", api_key)) && 
+           !request.contains("/health") && 
+           !request.contains("/api/v1/orders") {
+            return "{\"error\":\"Unauthorized\"}".to_string();
+        }
+    }
+    
     if request.contains("/health") {
         "OK".to_string()
     } else if request.contains("/api/v1/orders") {

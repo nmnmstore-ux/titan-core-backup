@@ -1,21 +1,23 @@
-FROM rust:1.81-bookworm AS builder
-RUN apt-get update && apt-get install -y gcc make cmake clang llvm pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+FROM rust:1.82-slim as builder
+
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src tests && echo "fn main() {}" > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-RUN rm -rf src tests
-COPY . .
-RUN cargo build --release
+COPY core/ core/
+COPY flash-loan/ flash-loan/
+COPY arbitrage/ arbitrage/
+COPY mev-protection/ mev-protection/
+COPY cross-venue-arb/ cross-venue-arb/
+COPY super-arb/ super-arb/
+COPY chaos/ chaos/
+COPY integration/ integration/
+COPY src/ src/
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN cargo build --release --bin api-server
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* && \
-    groupadd --gid 65532 thebridge && \
-    useradd --uid 65532 --gid thebridge --shell /usr/sbin/nologin --no-create-home thebridge && \
-    mkdir -p /data/wal /data/iso20022 && \
-    chown -R thebridge:thebridge /data
-COPY --from=builder /app/target/release/the-bridge-matching-engine /app/
-USER thebridge
+RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/api-server /usr/local/bin/api-server
+
 EXPOSE 3001
-ENV RUST_LOG=info
-ENTRYPOINT ["/app/the-bridge-matching-engine"]
+ENTRYPOINT ["/usr/local/bin/api-server"]

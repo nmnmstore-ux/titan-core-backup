@@ -401,7 +401,7 @@ impl RiskEngine {
         &self,
         participant_id: &str,
         symbol: &str,
-        side: &str,
+        _side: &str,
         quantity: f64,
         price: f64,
     ) -> Result<PreTradeCheckResult, String> {
@@ -479,8 +479,15 @@ impl RiskEngine {
         checks.push(concentration_check);
         
         let sector = self.market_data.read().await.get(symbol).map(|d| d.sector.clone()).unwrap_or("Other".to_string());
+        let sector_map: HashMap<String, String> = {
+            let md = self.market_data.read().await;
+            profile.positions.keys().map(|s| {
+                let sec = md.get(s).map(|d| d.sector.clone()).unwrap_or_default();
+                (s.clone(), sec)
+            }).collect()
+        };
         let sector_exposure: f64 = profile.positions.iter()
-            .filter(|(s, _)| self.market_data.read().await.get(*s).map(|d| d.sector.clone()).unwrap_or_default() == sector)
+            .filter(|(s, _)| sector_map.get(*s).map(|d| d.as_str()) == Some(&sector))
             .map(|(_, p)| p.market_value_usd)
             .sum();
         let projected_sector_exposure = sector_exposure + notional;
@@ -548,7 +555,7 @@ impl RiskEngine {
         });
         
         let old_quantity = position.quantity;
-        let old_value = position.market_value_usd;
+        let _old_value = position.market_value_usd;
         
         match side {
             "buy" => {
@@ -799,7 +806,7 @@ impl RiskEngine {
             recs.push("Diversify positions to reduce concentration risk".to_string());
         }
         
-        if profile.open_orders_count > self.config.max_open_orders as u32 * 0.8 {
+        if profile.open_orders_count as f64 > self.config.max_open_orders as f64 * 0.8 {
             recs.push("Review and cancel stale orders".to_string());
         }
         
@@ -855,7 +862,7 @@ impl RiskEngine {
             let mut stressed_nav = profile.nav_usd;
             let mut stressed_positions = profile.positions.clone();
             
-            for (symbol, pos) in &mut stressed_positions {
+            for (_symbol, pos) in &mut stressed_positions {
                 let sector = &pos.sector;
                 let shock = match sector.as_str() {
                     "Crypto" => scenario.equity_shock * scenario.volatility_multiplier,

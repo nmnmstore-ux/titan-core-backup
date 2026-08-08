@@ -1,31 +1,185 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use compact_str::CompactString;
-use chrono::{DateTime, Utc};
+use crossbeam::queue::ArrayQueue;
+use serde::de::{self, Unexpected};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
+pub fn bincode_serialize<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, String> {
+    bincode::serialize(value).map_err(|e| format!("bincode serialize: {}", e))
+}
+
+pub fn bincode_deserialize<'de, T: serde::Deserialize<'de>>(bytes: &'de [u8]) -> Result<T, String> {
+    bincode::deserialize(bytes).map_err(|e| format!("bincode deserialize: {}", e))
+}
+
+pub fn bincode_serialize_direct<T: serde::Serialize>(
+    value: &T,
+) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+    bincode::serialize(value)
+}
+
+pub fn bincode_deserialize_direct<'de, T: serde::Deserialize<'de>>(
+    bytes: &'de [u8],
+) -> Result<T, Box<bincode::ErrorKind>> {
+    bincode::deserialize(bytes)
+}
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use uuid::Uuid;
+
+pub struct IdPool {
+    pool: Arc<ArrayQueue<Uuid>>,
+    batch_size: usize,
+    running: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl IdPool {
+    pub fn new(capacity: usize, batch_size: usize) -> Self {
+        let pool = Arc::new(ArrayQueue::new(capacity));
+        let running = Arc::new(AtomicBool::new(true));
+
+        for _ in 0..batch_size.min(capacity) {
+            let _ = pool.push(Uuid::new_v4());
+        }
+
+        let pool_clone = pool.clone();
+        let running_clone = running.clone();
+        let handle = thread::spawn(move || loop {
+            if !running_clone.load(Ordering::Relaxed) {
+                break;
+            }
+            for _ in 0..batch_size {
+                if pool_clone.push(Uuid::new_v4()).is_err() {
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_micros(1));
+        });
+
+        IdPool {
+            pool,
+            batch_size,
+            running,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn next_id(&self) -> Uuid {
+        self.pool.pop().unwrap_or_else(|| {
+            for _ in 0..self.batch_size {
+                let _ = self.pool.push(Uuid::new_v4());
+            }
+            self.pool.pop().unwrap_or_else(|| Uuid::new_v4())
+        })
+    }
+}
+
+impl Drop for IdPool {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+pub static ID_POOL: once_cell::sync::Lazy<IdPool> =
+    once_cell::sync::Lazy::new(|| IdPool::new(65536, 16384));
+
+pub static NEXT_ID_TAG: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+#[repr(u8)]
 pub enum OrderType {
-    Market,
-    Limit,
-    Stop,
-    StopLimit,
-    SWAP,
+    Market = 0,
+    Limit = 1,
+    Stop = 2,
+    StopLimit = 3,
+    SWAP = 4,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
+impl Serialize for OrderType {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderType {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(OrderType::Market),
+            1 => Ok(OrderType::Limit),
+            2 => Ok(OrderType::Stop),
+            3 => Ok(OrderType::StopLimit),
+            4 => Ok(OrderType::SWAP),
+            v => Err(de::Error::invalid_value(
+                Unexpected::Unsigned(v as u64),
+                &"0..=4",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+#[repr(u8)]
 pub enum OrderSide {
-    Buy,
-    Sell,
+    Buy = 0,
+    Sell = 1,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
+impl Serialize for OrderSide {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderSide {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(OrderSide::Buy),
+            1 => Ok(OrderSide::Sell),
+            v => Err(de::Error::invalid_value(
+                Unexpected::Unsigned(v as u64),
+                &"0..=1",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+#[repr(u8)]
 pub enum OrderStatus {
-    New,
-    PartiallyFilled,
-    Filled,
-    Cancelled,
-    Rejected,
-    Expired,
+    New = 0,
+    PartiallyFilled = 1,
+    Filled = 2,
+    Cancelled = 3,
+    Rejected = 4,
+    Expired = 5,
+}
+
+impl Serialize for OrderStatus {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for OrderStatus {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(OrderStatus::New),
+            1 => Ok(OrderStatus::PartiallyFilled),
+            2 => Ok(OrderStatus::Filled),
+            3 => Ok(OrderStatus::Cancelled),
+            4 => Ok(OrderStatus::Rejected),
+            5 => Ok(OrderStatus::Expired),
+            v => Err(de::Error::invalid_value(
+                Unexpected::Unsigned(v as u64),
+                &"0..=5",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,12 +199,16 @@ pub enum OrderStyle {
 }
 
 impl Default for OrderStyle {
-    fn default() -> Self { OrderStyle::Standard }
+    fn default() -> Self {
+        OrderStyle::Standard
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: Uuid,
+    #[serde(skip)]
+    pub id_tag: u64,
     pub user_id: Uuid,
     pub pair: CompactString,
     pub order_type: OrderType,
@@ -61,14 +219,23 @@ pub struct Order {
     pub remaining: f64,
     pub status: OrderStatus,
     pub timestamp: i64,
+    #[serde(default)]
     pub ttl_ms: Option<i64>,
+    #[serde(default)]
     pub is_swap: bool,
+    #[serde(default)]
     pub swap_target_currency: Option<String>,
+    #[serde(default)]
     pub tee_signed: bool,
+    #[serde(default)]
     pub dot_verified: bool,
+    #[serde(default)]
     pub stealth: bool,
+    #[serde(default)]
     pub trailing_offset: Option<f64>,
+    #[serde(default)]
     pub trigger_price: Option<f64>,
+    #[serde(default)]
     pub hard_floor: Option<f64>,
     #[serde(default)]
     pub track: Track,
@@ -78,6 +245,7 @@ pub struct Order {
     pub hidden_remaining: f64,
 
     pub filled_quantity: u128,
+    #[serde(default)]
     pub client_order_id: Option<String>,
 }
 
@@ -85,6 +253,7 @@ impl Default for Order {
     fn default() -> Self {
         Self {
             id: Uuid::nil(),
+            id_tag: 0,
             user_id: Uuid::nil(),
             pair: CompactString::new(""),
             order_type: OrderType::Limit,
@@ -114,9 +283,16 @@ impl Default for Order {
 }
 
 impl Order {
-    pub fn new_limit(user_id: Uuid, pair: String, side: OrderSide, price: f64, quantity: f64) -> Self {
+    pub fn new_limit(
+        user_id: Uuid,
+        pair: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Limit,
@@ -126,7 +302,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -144,9 +320,18 @@ impl Order {
         }
     }
 
-    pub fn new_stealth_trailing(user_id: Uuid, pair: String, side: OrderSide, price: f64, quantity: f64, trail_offset: f64, trigger: f64) -> Self {
+    pub fn new_stealth_trailing(
+        user_id: Uuid,
+        pair: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+        trail_offset: f64,
+        trigger: f64,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Limit,
@@ -156,7 +341,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -174,9 +359,17 @@ impl Order {
         }
     }
 
-    pub fn new_hard_floor(user_id: Uuid, pair: String, side: OrderSide, price: f64, quantity: f64, floor: f64) -> Self {
+    pub fn new_hard_floor(
+        user_id: Uuid,
+        pair: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+        floor: f64,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Limit,
@@ -186,7 +379,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -206,7 +399,8 @@ impl Order {
 
     pub fn new_market(user_id: Uuid, pair: String, side: OrderSide, quantity: f64) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Market,
@@ -216,7 +410,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -236,7 +430,8 @@ impl Order {
 
     pub fn new_swap(user_id: Uuid, from: String, to: String, quantity: f64) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(format!("{}/{}", from, to).to_uppercase()),
             order_type: OrderType::SWAP,
@@ -246,7 +441,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: Some(5000),
             is_swap: true,
             swap_target_currency: Some(to),
@@ -264,10 +459,18 @@ impl Order {
         }
     }
 
-    pub fn new_iceberg(user_id: Uuid, pair: String, side: OrderSide, price: f64, quantity: f64, display_qty: f64) -> Self {
+    pub fn new_iceberg(
+        user_id: Uuid,
+        pair: String,
+        side: OrderSide,
+        price: f64,
+        quantity: f64,
+        display_qty: f64,
+    ) -> Self {
         let visible = display_qty.min(quantity);
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Limit,
@@ -277,7 +480,7 @@ impl Order {
             filled: 0.0,
             remaining: visible,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -288,16 +491,26 @@ impl Order {
             trigger_price: None,
             hard_floor: None,
             track: Track::Compliant,
-            style: OrderStyle::Iceberg { display_quantity: display_qty },
+            style: OrderStyle::Iceberg {
+                display_quantity: display_qty,
+            },
             hidden_remaining: quantity - visible,
             filled_quantity: 0,
             client_order_id: None,
         }
     }
 
-    pub fn new_stop_loss(user_id: Uuid, pair: String, side: OrderSide, quantity: f64, trigger: f64, limit_price: Option<f64>) -> Self {
+    pub fn new_stop_loss(
+        user_id: Uuid,
+        pair: String,
+        side: OrderSide,
+        quantity: f64,
+        trigger: f64,
+        limit_price: Option<f64>,
+    ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: ID_POOL.next_id(),
+            id_tag: NEXT_ID_TAG.fetch_add(1, Ordering::Relaxed),
             user_id,
             pair: CompactString::from(pair.to_uppercase()),
             order_type: OrderType::Market,
@@ -307,7 +520,7 @@ impl Order {
             filled: 0.0,
             remaining: quantity,
             status: OrderStatus::New,
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: crate::time_cache::fast_now_ms(),
             ttl_ms: None,
             is_swap: false,
             swap_target_currency: None,
@@ -318,7 +531,10 @@ impl Order {
             trigger_price: None,
             hard_floor: None,
             track: Track::Compliant,
-            style: OrderStyle::StopLoss { trigger_price: trigger, limit_price },
+            style: OrderStyle::StopLoss {
+                trigger_price: trigger,
+                limit_price,
+            },
             hidden_remaining: 0.0,
             filled_quantity: 0,
             client_order_id: None,
@@ -338,7 +554,9 @@ pub struct Trade {
     pub buy_user_id: Uuid,
     pub sell_user_id: Uuid,
     pub timestamp: i64,
+    #[serde(default)]
     pub dot_settled: bool,
+    #[serde(default)]
     pub tee_notarized: bool,
 }
 
@@ -351,15 +569,38 @@ pub struct DOTTransfer {
     pub amount: f64,
     pub timestamp: i64,
     pub status: DOTStatus,
+    #[serde(default)]
     pub tee_attested: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum DOTStatus {
-    Pending,
-    Settled,
-    Failed,
-    Disputed,
+    Pending = 0,
+    Settled = 1,
+    Failed = 2,
+    Disputed = 3,
+}
+
+impl Serialize for DOTStatus {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for DOTStatus {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(DOTStatus::Pending),
+            1 => Ok(DOTStatus::Settled),
+            2 => Ok(DOTStatus::Failed),
+            3 => Ok(DOTStatus::Disputed),
+            v => Err(de::Error::invalid_value(
+                Unexpected::Unsigned(v as u64),
+                &"0..=3",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -407,19 +648,45 @@ pub struct PlaceOrderResult {
     pub remaining: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
 pub enum Track {
-    Compliant,
-    Autonomous,
+    Compliant = 0,
+    Autonomous = 1,
+}
+
+impl Serialize for Track {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> Deserialize<'de> for Track {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match u8::deserialize(deserializer)? {
+            0 => Ok(Track::Compliant),
+            1 => Ok(Track::Autonomous),
+            v => Err(de::Error::invalid_value(
+                Unexpected::Unsigned(v as u64),
+                &"0..=1",
+            )),
+        }
+    }
 }
 
 impl Default for Track {
-    fn default() -> Self { Track::Compliant }
+    fn default() -> Self {
+        Track::Compliant
+    }
 }
 
 impl Track {
-    pub fn is_compliant(&self) -> bool { matches!(self, Track::Compliant) }
-    pub fn is_autonomous(&self) -> bool { matches!(self, Track::Autonomous) }
+    pub fn is_compliant(&self) -> bool {
+        matches!(self, Track::Compliant)
+    }
+    pub fn is_autonomous(&self) -> bool {
+        matches!(self, Track::Autonomous)
+    }
 }
 
 pub const TRACK_COMPLIANT: u8 = 0;

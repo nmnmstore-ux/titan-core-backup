@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package thebridge;
+
+import "thebridge/common.proto";
+
+option optimize_for = SPEED;
+option go_package = "github.com/user/the-bridge/gen/thebridge;thebridge";
+option java_package = "com.thebridge.grpc";
+option java_multiple_files = true;
+option java_outer_classname = "AuthProto";
+
+service AuthService {
+  rpc RegisterWebAuthn(RegistrationRequest) returns (RegistrationResponse);
+  rpc LoginWebAuthn(LoginRequest) returns (LoginResponse);
+  rpc ValidateToken(TokenRequest) returns (SessionInfo);
+  rpc RefreshSession(RefreshRequest) returns (SessionInfo);
+}
+
+message RegistrationRequest {
+  string credential_id = 1;
+  string user_id = 2;
+  string rp_id = 3;
+  string rp_name = 4;
+}
+
+message RegistrationResponse {
+  bool success = 1;
+  string credential_id = 2;
+  string error_message = 3;
+  ErrorDetail error = 4;
+}
+
+message LoginRequest {
+  string credential_id = 1;
+  bytes client_data_json = 2;
+  bytes authenticator_data = 3;
+  bytes signature = 4;
+  bytes user_handle = 5;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string access_token = 2;
+  string refresh_token = 3;
+  uint64 expires_in_seconds = 4;
+  SessionInfo session = 5;
+  string error_message = 6;
+  ErrorDetail error = 7;
+}
+
+message TokenRequest {
+  string token = 1;
+}
+
+message RefreshRequest {
+  string refresh_token = 1;
+}
+
+message SessionInfo {
+  string session_id = 1;
+  string user_id = 2;
+  string role = 3;
+  Timestamp created_at = 4;
+  Timestamp expires_at = 5;
+  repeated string permissions = 6;
+}

@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use tracing::{info, warn, debug};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevenueConfig {
@@ -78,7 +78,7 @@ pub struct ParticipantRevenueProfile {
     pub referral_earnings_usd: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ParticipantTier {
     Standard,
     Professional,
@@ -163,6 +163,22 @@ impl RevenueEngine {
             metrics: Arc::new(RwLock::new(RevenueMetrics::default())),
             referral_tree: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub fn get_config(&self) -> &RevenueConfig {
+        &self.config
+    }
+
+    pub fn set_config(&mut self, config: RevenueConfig) {
+        self.config = config;
+    }
+
+    pub fn get_profiles(&self) -> &Arc<RwLock<HashMap<String, ParticipantRevenueProfile>>> {
+        &self.profiles
+    }
+
+    pub fn get_referral_tree(&self) -> &Arc<RwLock<HashMap<String, Vec<String>>>> {
+        &self.referral_tree
     }
 
     pub async fn register_participant(&self, participant_id: String, referred_by: Option<String>) -> ParticipantRevenueProfile {

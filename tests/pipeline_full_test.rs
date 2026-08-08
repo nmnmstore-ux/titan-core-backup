@@ -3,6 +3,10 @@ use uuid::Uuid;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/pool.rs"]
+mod pool;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/matching.rs"]
 mod matching;
 #[path = "../src/orderbook.rs"]
@@ -41,6 +45,7 @@ use universal_bridge::{UniversalBridge, Capability};
 fn make_order(side: OrderSide, price: f64, qty: f64, track: Track) -> Order {
     Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: Uuid::new_v4(),
         pair: "USD/EGP".into(),
         order_type: OrderType::Limit,

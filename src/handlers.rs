@@ -245,6 +245,7 @@ pub async fn place_twap_order(
     }
     let order = Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id,
         pair: CompactString::from(pair.to_uppercase()),
         order_type: OrderType::Limit,
@@ -254,7 +255,7 @@ pub async fn place_twap_order(
         filled: 0.0,
         remaining: quantity,
         status: OrderStatus::New,
-        timestamp: chrono::Utc::now().timestamp_millis(),
+        timestamp: crate::time_cache::fast_now_ms(),
         ttl_ms: None,
         is_swap: false,
         swap_target_currency: None,
@@ -267,6 +268,8 @@ pub async fn place_twap_order(
         track: Track::Compliant,
         style: OrderStyle::TWAP { duration_secs, interval_secs },
         hidden_remaining: 0.0,
+        filled_quantity: 0,
+        client_order_id: None,
     };
     let tenant_id = Some(user_id);
     match process_order_placement(state.clone(), order, tenant_id).await {
@@ -477,7 +480,7 @@ pub fn build_trade_payload(trade: &Trade, track: &Track) -> pipeline::TradePaylo
         total: (trade.total * 1_000_000.0) as u64,
         buy_user_id: u64::from_le_bytes(buy_user_bytes[..8].try_into().unwrap_or([0; 8])),
         sell_user_id: u64::from_le_bytes(sell_user_bytes[..8].try_into().unwrap_or([0; 8])),
-        timestamp_ns: chrono::Utc::now().timestamp_millis() * 1_000_000,
+        timestamp_ns: crate::time_cache::fast_now_ms() * 1_000_000,
         seq: 0,
         track: match track {
             types::Track::Autonomous => types::TRACK_AUTONOMOUS,
@@ -792,7 +795,7 @@ pub async fn create_api_key_handler(
         Ok((_, full_key)) => Ok(Json(serde_json::json!({
             "key": full_key,
             "tenant_id": id,
-            "created_at": chrono::Utc::now().timestamp_millis(),
+            "created_at": crate::time_cache::fast_now_ms(),
         }))),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e})))),
     }
@@ -1309,7 +1312,7 @@ pub async fn handle_market_data_ws(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let msg = serde_json::json!({"type": "heartbeat", "pair": pair, "timestamp": chrono::Utc::now().timestamp_millis()});
+                let msg = serde_json::json!({"type": "heartbeat", "pair": pair, "timestamp": crate::time_cache::fast_now_ms()});
                 if ws.send(Message::Text(msg.to_string().into())).await.is_err() { break; }
             }
             event = rx.recv() => {
@@ -1406,7 +1409,7 @@ pub async fn handle_orders_ws(
                     "tps": tps,
                     "trades": trades,
                     "uptime_secs": start.elapsed().as_secs(),
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
+                    "timestamp": crate::time_cache::fast_now_ms(),
                 });
                 if ws.send(Message::Text(msg.to_string().into())).await.is_err() {
                     break;

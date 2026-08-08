@@ -4,6 +4,10 @@ use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/pool.rs"]
+mod pool;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/io.rs"]
 mod io;
 #[path = "../src/consensus.rs"]
@@ -23,6 +27,7 @@ fn test_keypair() -> ([u8; 32], [u8; 32]) {
 fn sample_order() -> Order {
     Order {
         id: Uuid::new_v4(),
+        id_tag: 0,
         user_id: Uuid::new_v4(),
         pair: CompactString::from("USD/EGP"),
         side: types::OrderSide::Buy,

@@ -149,6 +149,22 @@ impl WhiteLabelExchange {
         self.instances.iter().map(|i| i.clone()).collect()
     }
 
+    pub fn update_config(&self, tenant_id: &Uuid, config: WhiteLabelConfig) -> Result<WhiteLabelInstance, String> {
+        let mut inst = self.instances.get_mut(tenant_id).ok_or("instance not found")?;
+        let api_port = config.custom_api_port.unwrap_or(5000);
+        let fix_port = config.custom_fix_port.unwrap_or(6000);
+        inst.config = config;
+        inst.api_endpoint = format!("https://{}.swiftbridge.io:{}", inst.config.domain.replace('.', "-"), api_port);
+        inst.fix_endpoint = format!("tcp://{}.swiftbridge.io:{}", inst.config.domain.replace('.', "-"), fix_port);
+        inst.dashboard_url = format!("https://dashboard.{}/admin", inst.config.domain);
+        let result = inst.clone();
+        Ok(result)
+    }
+
+    pub fn remove_instance(&self, tenant_id: &Uuid) -> bool {
+        self.instances.remove(tenant_id).is_some()
+    }
+
     pub fn deployment_count(&self) -> u64 {
         self.total_deployments.load(Ordering::Relaxed)
     }

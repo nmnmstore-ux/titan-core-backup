@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+#![allow(clippy::unreadable_literal)]
 use once_cell::sync::OnceCell;
 use page_size;
 use std::alloc::Layout;
@@ -11,10 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-#[cfg(not(target_os = "linux"))]
-const _SC_NPROCESSORS_CONF: i32 = 84;
-#[cfg(not(target_os = "linux"))]
-unsafe fn sysconf(_: i32) -> i64 { num_cpus::get() as i64 }
+const CACHELINE: usize = 64;
 
 static NUMA_TOPOLOGY: OnceCell<NUMATopology> = OnceCell::new();
 
@@ -143,6 +141,59 @@ pub struct NumaVec<T> {
     layout: Layout,
 }
 
+#[cfg(target_os = "linux")]
+fn bind_pages_to_node(ptr: *const u8, len: usize, _node_id: i32) -> Result<bool, String> {
+    if len == 0 || ptr.is_null() {
+        return Ok(false);
+    }
+    let ret = unsafe {
+        libc::posix_madvise(
+            ptr as *mut libc::c_void,
+            len,
+            libc::MADV_HUGEPAGE,
+        )
+    };
+    if ret != 0 {
+        let errno = unsafe { *libc::__errno_location() };
+        return Err(format!("posix_madvise(MADV_HUGEPAGE) failed: errno {}", errno));
+    }
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bind_pages_to_node(_ptr: *const u8, _len: usize, _node_id: i32) -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn try_alloc_on_node(node_id: i32, size_bytes: usize, align: usize) -> Result<(*mut u8, bool), String> {
+    let layout = Layout::from_size_align(size_bytes, align).map_err(|e| e.to_string())?;
+    let raw = unsafe { std::alloc::alloc_zeroed(layout) };
+    if raw.is_null() {
+        return Err(format!("allocation failed for {} bytes on node {}", size_bytes, node_id));
+    }
+    let bound = match bind_pages_to_node(raw, size_bytes, node_id) {
+        Ok(b) => b,
+        Err(e) => {
+            if cfg!(debug_assertions) {
+                eprintln!("[numa] warning: {}; falling back to unbound allocation", e);
+            }
+            false
+        }
+    };
+    Ok((raw, bound))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn try_alloc_on_node(_node_id: i32, size_bytes: usize, align: usize) -> Result<(*mut u8, bool), String> {
+    let layout = Layout::from_size_align(size_bytes, align).map_err(|e| e.to_string())?;
+    let raw = unsafe { std::alloc::alloc_zeroed(layout) };
+    if raw.is_null() {
+        return Err("allocation failed".to_string());
+    }
+    Ok((raw, false))
+}
+
 impl<T> NumaVec<T> {
     pub fn new_on_node(node_id: i32, count: usize) -> Self {
         match Self::try_new_on_node(node_id, count) {
@@ -161,12 +212,14 @@ impl<T> NumaVec<T> {
     #[cfg(target_os = "linux")]
     pub fn try_new_on_node(node_id: i32, count: usize) -> Result<Self, String> {
         let size = count * mem::size_of::<T>();
+        if size == 0 {
+            return Err("zero-size allocation".to_string());
+        }
         let topo = NUMATopology::instance();
         let aligned_size = (size + topo.page_size - 1) & !(topo.page_size - 1);
-        let layout = Layout::from_size_align(aligned_size, mem::align_of::<T>()).map_err(|e| e.to_string())?;
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut T };
-        if ptr.is_null() { return Err(format!("allocation failed for {} bytes on node {}", aligned_size, node_id)); }
-        Ok(NumaVec { ptr, capacity: count, node_id, size_bytes: aligned_size as u64, is_numa: false, layout })
+        let align = mem::align_of::<T>().max(CACHELINE);
+        let (raw, bound) = try_alloc_on_node(node_id, aligned_size, align)?;
+        Ok(NumaVec { ptr: raw as *mut T, capacity: count, node_id, size_bytes: aligned_size as u64, is_numa: bound, layout: Layout::from_size_align(aligned_size, align).map_err(|e| e.to_string())? })
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -174,14 +227,28 @@ impl<T> NumaVec<T> {
         let size = count * mem::size_of::<T>();
         let topo = NUMATopology::instance();
         let aligned_size = (size + topo.page_size - 1) & !(topo.page_size - 1);
-        let layout = Layout::from_size_align(aligned_size, mem::align_of::<T>()).map_err(|e| e.to_string())?;
-        let ptr = unsafe { std::alloc::alloc_zeroed(layout) as *mut T };
-        if ptr.is_null() { return Err(format!("allocation failed for {} bytes on node {}", aligned_size, node_id)); }
-        Ok(NumaVec { ptr, capacity: count, node_id, size_bytes: aligned_size as u64, is_numa: false, layout })
+        let align = mem::align_of::<T>().max(CACHELINE);
+        let (raw, bound) = try_alloc_on_node(node_id, aligned_size, align)?;
+        Ok(NumaVec { ptr: raw as *mut T, capacity: count, node_id, size_bytes: aligned_size as u64, is_numa: bound, layout: Layout::from_size_align(aligned_size, align).map_err(|e| e.to_string())? })
     }
+
+    pub fn is_node_bound(&self) -> bool { self.is_numa }
 
     pub fn as_slice(&self) -> &[T] { unsafe { slice::from_raw_parts(self.ptr, self.capacity) } }
     pub fn as_mut_slice(&mut self) -> &mut [T] { unsafe { slice::from_raw_parts_mut(self.ptr, self.capacity) } }
+}
+
+impl<T> std::ops::Index<usize> for NumaVec<T> {
+    type Output = T;
+    fn index(&self, index: usize) -> &T {
+        unsafe { &*self.ptr.add(index) }
+    }
+}
+
+impl<T> std::ops::IndexMut<usize> for NumaVec<T> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        unsafe { &mut *self.ptr.add(index) }
+    }
 }
 
 impl<T> Drop for NumaVec<T> {
@@ -205,6 +272,8 @@ impl HugepageBuffer {
             let ptr = libc::mmap(ptr::null_mut(), aligned, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
             if ptr == libc::MAP_FAILED { return Err(format!("mmap failed for {} bytes", aligned)); }
             ptr::write_bytes(ptr as *mut u8, 0, aligned);
+            let node_id = topo.nodes.first().map(|n| n.id).unwrap_or(0);
+            let _ = bind_pages_to_node(ptr as *const u8, aligned, node_id);
             Ok(Self { ptr: ptr as *mut u8, size: aligned })
         }
     }
@@ -243,7 +312,7 @@ impl CPUAffinity {
             libc::CPU_ZERO(&mut cpuset);
             libc::CPU_SET(core_id as usize, &mut cpuset);
             if libc::sched_setaffinity(0, mem::size_of::<libc::cpu_set_t>(), &cpuset) != 0 {
-                return Err(format!("sched_setaffinity failed for core {}: errno {}", core_id, *libc::__errno_location()));
+                return Err(format!("sched_setaffinity failed for core {}: errno {}", core_id, unsafe { *libc::__errno_location() }));
             }
         }
         Ok(())
@@ -275,6 +344,35 @@ impl CPUAffinity {
         let core = if self.isolated_cores.is_empty() { idx % self.core_count } else { self.isolated_cores[(idx as usize) % self.isolated_cores.len()] };
         let _ = Self::pin_to_core(core);
         core
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn core_node(&self, core_id: u32) -> i32 {
+        for node in &self.topology.nodes {
+            if node.cores.contains(&core_id) {
+                return node.id;
+            }
+        }
+        0
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn core_node(&self, _core_id: u32) -> i32 { 0 }
+
+    pub fn pin_to_node_core(&self, node_id: i32) -> Result<u32, String> {
+        let topo = self.topology;
+        let node_cores = topo.affinity_for_node(node_id);
+        if let Some(cores) = node_cores {
+            if !cores.is_empty() {
+                let idx = (self.next_core.fetch_add(1, Ordering::Relaxed) as usize) % cores.len();
+                let core = cores[idx];
+                let _ = Self::pin_to_core(core);
+                return Ok(core);
+            }
+        }
+        let core = self.next_core.fetch_add(1, Ordering::Relaxed) % self.core_count;
+        let _ = Self::pin_to_core(core);
+        Ok(core)
     }
 
     pub fn isolate_hotpath_cores(&mut self, count: u32) -> &[u32] {

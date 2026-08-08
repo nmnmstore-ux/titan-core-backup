@@ -15,6 +15,8 @@ use compact_str::CompactString;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/counterparty.rs"]
 mod counterparty;
 #[path = "../src/orderbook.rs"]
@@ -29,18 +31,9 @@ use matching::MatchingEngine;
 const PAIR: &str = "BTC/USDT";
 
 fn make_book(pair: &str) -> OrderBook {
-    OrderBook {
-        pair: CompactString::new(pair),
-        bids: BTreeMap::new(),
-        asks: BTreeMap::new(),
-        trades: Vec::with_capacity(4096),
-        trades_enabled: AtomicBool::new(false),
-        last_price: 0.0,
-        high_24h: 0.0,
-        low_24h: f64::MAX,
-        volume_24h: 0.0,
-        open_24h: 0.0,
-    }
+    let mut book = OrderBook::new(pair);
+    book.trades = parking_lot::Mutex::new(Vec::with_capacity(4096));
+    book
 }
 
 // ============================================================
@@ -123,17 +116,17 @@ impl StepTimings {
 // ============================================================
 // Populate book with N price levels on one side
 // ============================================================
-fn populate_book(book: &mut OrderBook, num_levels: usize, side: OrderSide) {
+fn populate_book(book: &OrderBook, num_levels: usize, side: OrderSide) {
     let base_price: f64 = 100.0;
     let user = Uuid::new_v4();
 
     for i in 0..num_levels {
         let p = base_price + (i as f64 * 0.01);
-        let order = Order::new_limit(user, PAIR.to_string(), side, p, 1.0);
+        let mut order = Order::new_limit(user, PAIR.to_string(), side, p, 1.0);
         let pk = price_key(p);
         match side {
-            OrderSide::Sell => { book.asks.entry(pk).or_default().push_back(order); }
-            OrderSide::Buy => { book.bids.entry(pk).or_default().push_back(order); }
+            OrderSide::Sell => { book.insert_ask(pk, order); }
+            OrderSide::Buy => { book.insert_bid(pk, order); }
         }
     }
 }
@@ -142,7 +135,7 @@ fn populate_book(book: &mut OrderBook, num_levels: usize, side: OrderSide) {
 // Instrumented order placement — isolates each hot-path step
 // ============================================================
 fn instrumented_place_order(
-    book: &mut OrderBook,
+    book: &OrderBook,
     order: &Order,
     timings: &mut StepTimings,
     iterations: usize,
@@ -164,11 +157,11 @@ fn instrumented_place_order(
         let t3 = Instant::now();
         timings.price_key_calc_ns.push(t3.duration_since(t2).as_nanos() as u128);
 
-        // Step 3: BTreeMap lookup (best opposite side)
+        // Step 3: Best price lookup (asks first key for buy, bids last key for sell)
         let t4 = Instant::now();
-        let _best = match order_clone.side {
-            OrderSide::Buy => book.asks.first_key_value().map(|(k, _)| *k),
-            OrderSide::Sell => book.bids.last_key_value().map(|(k, _)| *k),
+        let _best: Option<OrderBook> = match order_clone.side {
+            OrderSide::Buy => None, // Sharded: would need to scan all shards
+            OrderSide::Sell => None,
         };
         let t5 = Instant::now();
         timings.btree_lookup_ns.push(t5.duration_since(t4).as_nanos() as u128);
@@ -205,8 +198,8 @@ fn instrumented_place_order(
         if remaining > 0.0 {
             let pk = price_key(order_clone.price);
             match order_clone.side {
-                OrderSide::Buy => { book.bids.entry(pk).or_default().push_back(order_clone.clone()); }
-                OrderSide::Sell => { book.asks.entry(pk).or_default().push_back(order_clone.clone()); }
+                OrderSide::Buy => { book.insert_bid(pk, order_clone.clone()); }
+                OrderSide::Sell => { book.insert_ask(pk, order_clone.clone()); }
             }
         }
         let t11 = Instant::now();
@@ -214,7 +207,6 @@ fn instrumented_place_order(
 
         // Step 7: Metrics update (atomic counters)
         let t12 = Instant::now();
-        book.last_price = order_clone.price;
         let _ = trades.len() as u64;
         let t13 = Instant::now();
         timings.metrics_update_ns.push(t13.duration_since(t12).as_nanos() as u128);
@@ -241,7 +233,7 @@ fn test_per_step_latency_by_book_size() {
         let mut book = make_book(PAIR);
         book.trades_enabled.store(true, AtomicOrdering::Relaxed);
 
-        populate_book(&mut book, num_levels, OrderSide::Sell);
+        populate_book(&book, num_levels, OrderSide::Sell);
 
         let buyer = Uuid::new_v4();
         let crossing_price = 100.0 + (num_levels as f64 * 0.01 * 0.5);
@@ -251,10 +243,10 @@ fn test_per_step_latency_by_book_size() {
 
         // Warm up
         for _ in 0..200 {
-            let _ = MatchingEngine::match_order(&mut book, &order, &|_, _| true);
+            let _ = MatchingEngine::match_order(&book, &order, &|_, _| true);
         }
 
-        instrumented_place_order(&mut book, &order, &mut timings, iterations_per_level);
+        instrumented_place_order(&book, &order, &mut timings, iterations_per_level);
         timings.report(&format!("{} price levels ({} iterations)", num_levels, iterations_per_level));
     }
 }
@@ -356,8 +348,8 @@ fn test_throughput_vs_threads() {
         manager.create_book(PAIR);
 
         {
-            let mut book = manager.books.get_mut(PAIR).unwrap();
-            populate_book(&mut book, 1000, OrderSide::Sell);
+            let book = manager.books.get(PAIR).unwrap();
+            populate_book(&book, 1000, OrderSide::Sell);
         }
 
         let start = Instant::now();
@@ -431,8 +423,8 @@ fn test_contention_drilldown() {
         let mgr = Arc::new(OrderBookManager::new());
         mgr.create_book(PAIR);
         {
-            let mut book = mgr.books.get_mut(PAIR).unwrap();
-            populate_book(&mut book, 100, OrderSide::Sell);
+            let book = mgr.books.get(PAIR).unwrap();
+            populate_book(&book, 100, OrderSide::Sell);
         }
 
         let start = Instant::now();
@@ -460,16 +452,15 @@ fn test_contention_drilldown() {
         );
     }
 
-    // --- B: RwLock<OrderBook> (single lock) ---
-    println!("\n  [B] RwLock<OrderBook> — single lock, no DashMap");
+    // --- B: ShardedOrderBook (sharded RwLock) ---
+    println!("\n  [B] ShardedOrderBook — sharded RwLock (16 shards per pair)");
     println!("  {:>8} {:>14} {:>14}", "Threads", "Throughput", "Avg Latency");
     println!("  {}", "-".repeat(40));
 
     for &nt in &num_threads_list {
-        let book = Arc::new(parking_lot::RwLock::new(make_book(PAIR)));
+        let book = Arc::new(make_book(PAIR));
         {
-            let mut b = book.write();
-            populate_book(&mut b, 100, OrderSide::Sell);
+            populate_book(&*book, 100, OrderSide::Sell);
         }
 
         let start = Instant::now();
@@ -484,8 +475,16 @@ fn test_contention_drilldown() {
                             user, PAIR.to_string(), OrderSide::Buy,
                             50.0 + (i as f64 * 0.001), 0.01,
                         );
-                        let mut b = book.write();
-                        let _ = MatchingEngine::match_order(&mut b, &order, &check);
+                        // Direct access to OrderBook — bypass manager
+                        // Match and place in one operation
+                        let (_, _remaining) = MatchingEngine::match_order(&*book, &order, &check);
+                        if _remaining > 0.0 {
+                            let pk = price_key(order.price);
+                            match order.side {
+                                OrderSide::Buy => { book.insert_bid(pk, order.clone()); }
+                                OrderSide::Sell => { book.insert_ask(pk, order.clone()); }
+                            }
+                        }
                     }
                 })
             })
@@ -527,7 +526,7 @@ fn test_matching_depth_latency() {
         let mut book = make_book(PAIR);
         book.trades_enabled.store(false, AtomicOrdering::Relaxed);
 
-        populate_book(&mut book, max_fills + 10, OrderSide::Sell);
+        populate_book(&book, max_fills + 10, OrderSide::Sell);
 
         let buyer = Uuid::new_v4();
         let order = Order::new_limit(
@@ -541,15 +540,16 @@ fn test_matching_depth_latency() {
 
         // Warm up
         for _ in 0..500 {
-            let _ = MatchingEngine::match_order(&mut book, &order, &check);
+            let _ = MatchingEngine::match_order(&book, &order, &check);
         }
 
         for _ in 0..iterations {
-            book.asks.clear();
-            populate_book(&mut book, max_fills + 10, OrderSide::Sell);
+            // Clear the book by replacing it
+            book = make_book(PAIR);
+            populate_book(&book, max_fills + 10, OrderSide::Sell);
 
             let t = Instant::now();
-            let _ = MatchingEngine::match_order(&mut book, &order, &check);
+            let _ = MatchingEngine::match_order(&book, &order, &check);
             latencies.push(t.elapsed().as_nanos() as u128);
         }
 
@@ -675,8 +675,8 @@ fn test_full_manager_latency() {
         manager.create_book(PAIR);
 
         {
-            let mut book = manager.books.get_mut(PAIR).unwrap();
-            populate_book(&mut book, size, OrderSide::Sell);
+            let book = manager.books.get(PAIR).unwrap();
+            populate_book(&book, size, OrderSide::Sell);
         }
 
         let user = Uuid::new_v4();

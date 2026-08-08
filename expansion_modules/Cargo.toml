@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared_types",
+    "grpc_protos",
+    "ai_ceo_bridge",
+    "pwa_auth",
+    "fiat_offramp",
+    "integration",
+]
+default-members = ["integration"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+repository = "https://github.com/user/the-bridge"
+
+[workspace.dependencies]
+ai_ceo_bridge = { path = "ai_ceo_bridge", package = "ai-ceo-bridge" }
+fiat_offramp = { path = "fiat_offramp", package = "the-bridge-fiat-offramp" }
+grpc_protos = { path = "grpc_protos", package = "the-bridge-grpc-protos" }
+pwa_auth = { path = "pwa_auth", package = "the-bridge-pwa-auth" }
+shared_types = { path = "shared_types", package = "the-bridge-shared-types" }
+
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower = { version = "0.5", features = ["util", "timeout", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+tonic = "0.12"
+tonic-build = "0.12"
+tonic-health = "0.12"
+tonic-reflection = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde", "maths"] }
+
+thiserror = "2"
+anyhow = "1"
+tracing = { version = "0.1", features = ["attributes", "std"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+dashmap = "6"
+parking_lot = "0.12"
+once_cell = { version = "1", features = ["std"] }
+
+jsonwebtoken = "9"
+ring = "0.17"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+ciborium = "0.2"
+sha512 = "0.4"
+
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+incremental = true

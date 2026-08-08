@@ -67,8 +67,8 @@ pub struct LendingPoolSnapshot {
 }
 
 pub struct LendingPool {
-    deposits: Arc<DashMap<u64, DepositPosition>>,
-    loans: Arc<DashMap<u64, LoanPosition>>,
+    pub deposits: Arc<DashMap<u64, DepositPosition>>,
+    pub loans: Arc<DashMap<u64, LoanPosition>>,
     config: LendingPoolConfig,
     total_deposits: AtomicU64,
     total_loans: AtomicU64,

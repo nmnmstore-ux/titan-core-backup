@@ -3,19 +3,21 @@ resolver = "2"
 members = [
     "core",
     "flash-loan",
+    "flash-loan-v2",
     "arbitrage",
     "mev-protection",
     "chaos",
     "integration",
     "cross-venue-arb",
     "super-arb",
+    "A-core-infrastructure/config-manager",
 ]
 default-members = ["."]
 
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/user/the-bridge"
 
 [workspace.dependencies]
@@ -77,7 +79,7 @@ rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
 
 wasmtime = "14"
-numa = "0.6"
+
 tikv-jemallocator = "0.6"
 io-uring = "0.6"
 compact_str = { version = "0.8", features = ["serde"] }
@@ -100,12 +102,12 @@ base64 = "0.22"
 name = "the-bridge-matching-engine"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/user/the-bridge"
 
 [profile.release]
 opt-level = 3
-lto = "fat"
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
@@ -114,9 +116,17 @@ strip = true
 name = "matching-engine"
 path = "src/main.rs"
 
+[[bin]]
+name = "api-server"
+path = "src/main_new.rs"
+
 [[test]]
 name = "integration_tests"
 path = "tests/integration_tests.rs"
+
+[[test]]
+name = "performance_benchmark"
+path = "tests/performance_benchmark.rs"
 
 [[test]]
 name = "fix_gateway_test"
@@ -129,6 +139,50 @@ path = "tests/consensus_multinode_test.rs"
 [[test]]
 name = "load_test"
 path = "tests/load_test.rs"
+
+[[test]]
+name = "benchmark_full_pipeline"
+path = "tests/benchmark_full_pipeline.rs"
+
+[[test]]
+name = "chaos_test"
+path = "tests/chaos_test.rs"
+
+[[test]]
+name = "cloak_test"
+path = "tests/cloak_test.rs"
+
+[[test]]
+name = "consensus_test"
+path = "tests/consensus_test.rs"
+
+[[test]]
+name = "dot_settlement_test"
+path = "tests/dot_settlement_test.rs"
+
+[[test]]
+name = "e2e_http_test"
+path = "tests/e2e_http_test.rs"
+
+[[test]]
+name = "integration_test"
+path = "tests/integration_test.rs"
+
+[[test]]
+name = "latency_profiler"
+path = "tests/latency_profiler.rs"
+
+[[test]]
+name = "pipeline_circuit_breaker_integration"
+path = "tests/pipeline_circuit_breaker_integration.rs"
+
+[[test]]
+name = "pipeline_full_test"
+path = "tests/pipeline_full_test.rs"
+
+[[test]]
+name = "stress_test"
+path = "tests/stress_test.rs"
 
 [features]
 default = []
@@ -191,7 +245,6 @@ rust_decimal = { workspace = true }
 rust_decimal_macros = { workspace = true }
 
 wasmtime = { workspace = true }
-numa = { workspace = true }
 tikv-jemallocator = { workspace = true }
 io-uring = { workspace = true }
 compact_str = { workspace = true }
@@ -240,3 +293,8 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "engine_benchmarks"
+harness = false

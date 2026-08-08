@@ -9,10 +9,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+use compact_str::CompactString;
 use uuid::Uuid;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/pool.rs"]
+mod pool;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/matching.rs"]
 mod matching;
 #[path = "../src/counterparty.rs"]
@@ -213,6 +218,7 @@ impl OrderGenerator {
 
         Order {
             id: Uuid::new_v4(),
+            id_tag: 0,
             user_id: self.user_ids[idx],
             pair: CompactString::from(pair),
             order_type: OrderType::Limit,
@@ -238,6 +244,8 @@ impl OrderGenerator {
             track: Track::Compliant,
             style: OrderStyle::Standard,
             hidden_remaining: 0.0,
+            client_order_id: None,
+            filled_quantity: 0,
         }
     }
 }

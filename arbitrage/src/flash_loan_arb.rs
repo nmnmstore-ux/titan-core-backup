@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::PoolData;
 use the_bridge_flash_loan::{
     FlashLoanRouter, FlashLoanCallback, FlashLoanProvider as FLProvider,
-    AaveV3Provider, UniswapV3Provider, MockProvider,
+    AaveV3Provider, UniswapV3Provider,
     DEFAULT_CALLBACK_GAS_LIMIT,
 };
 
@@ -87,13 +87,13 @@ impl Default for FlashLoanArbConfig {
             arbitrage_contract: None,
             wallet_address: None,
             private_key: None,
-            scan_interval_ms: 2_000,
-            min_profit_usd: 50.0,
-            min_profit_bps: 15,
+            scan_interval_ms: 800,
+            min_profit_usd: 1.0,
+            min_profit_bps: 12,
             max_gas_price_gwei: 100.0,
-            max_position_size_eth: 100.0,
-            max_concurrent_trades: 3,
-            slippage_tolerance_bps: 30,
+            max_position_size_eth: 200.0,
+            max_concurrent_trades: 8,
+            slippage_tolerance_bps: 100,
             max_daily_loss_usd: 10_000.0,
             max_consecutive_failures: 5,
             circuit_breaker_cooldown_secs: 300,
@@ -367,6 +367,40 @@ impl DexPoolMonitor {
         Ok(updated)
     }
 
+    fn rpc_candidates(primary: &str) -> Vec<String> {
+        let mut candidates: Vec<String> = Vec::new();
+        for url in [primary.to_string(), std::env::var("ETH_RPC_FALLBACK").unwrap_or_default()] {
+            for part in url.split(',').map(|s| s.trim().to_string()) {
+                if !part.is_empty() && !candidates.contains(&part) {
+                    candidates.push(part);
+                }
+            }
+        }
+        if candidates.len() < 2 {
+            candidates.push("https://ethereum-rpc.publicnode.com".to_string());
+        }
+        candidates
+    }
+
+    async fn rpc_post_json(&self, primary: &str, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut last_err: Option<String> = None;
+        for candidate in Self::rpc_candidates(primary) {
+            match self.http_client.post(&candidate).json(payload).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    return resp.json::<serde_json::Value>().await
+                        .map_err(|e| format!("Parse error: {}", e));
+                }
+                Ok(resp) => {
+                    last_err = Some(format!("HTTP {}", resp.status().as_u16()));
+                }
+                Err(e) => {
+                    last_err = Some(format!("RPC error: {}", e));
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| "RPC error: all endpoints failed".into()))
+    }
+
     /// Call slot0() on a Uniswap V3 pool
     async fn eth_call_slot0(&self, rpc_url: &str, pool_addr: &Address) -> Result<(U256, i64), String> {
         // slot0() function selector: 0x3850c7bd
@@ -381,15 +415,7 @@ impl DexPoolMonitor {
             "id": 1,
         });
 
-        let resp = self.http_client
-            .post(rpc_url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("RPC error: {}", e))?;
-
-        let result: serde_json::Value = resp.json().await
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let result: serde_json::Value = self.rpc_post_json(rpc_url, &payload).await?;
 
         let hex_result = result["result"].as_str()
             .ok_or_else(|| format!("No result field"))?;
@@ -429,15 +455,7 @@ impl DexPoolMonitor {
             "id": 1,
         });
 
-        let resp = self.http_client
-            .post(rpc_url)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| format!("RPC error: {}", e))?;
-
-        let result: serde_json::Value = resp.json().await
-            .map_err(|e| format!("Parse error: {}", e))?;
+        let result: serde_json::Value = self.rpc_post_json(rpc_url, &payload).await?;
 
         let hex_result = result["result"].as_str()
             .ok_or_else(|| format!("No result field"))?;
@@ -563,11 +581,11 @@ impl ArbitrageDetector {
 
                     // Estimate profit in USD (simplified)
                     let estimated_amount = 1_000_000_000u128; // 1 token (18 decimals)
-                    let gross_profit_bps = profit_bps as f64;
-                    let gas_cost_usd = 20.0; // placeholder
-                    let flash_loan_fee_usd = estimated_amount as f64 * 0.0009; // 9 bps
-                    let net_profit = gross_profit_bps as f64 - 15.0; // minus fees
-                    let net_profit_usd = net_profit.max(0.0);
+                    let position_usd = 10_000.0; // simulated scan position
+                    let gross_profit_usd = (profit_bps as f64 / 10000.0) * position_usd;
+                    let gas_cost_usd = 6.0;
+                    let flash_loan_fee_usd = position_usd * 0.0009; // 9 bps fee
+                    let net_profit_usd = (gross_profit_usd - gas_cost_usd - flash_loan_fee_usd).max(0.0);
 
                     let opp = ArbOpportunity {
                         id: Uuid::new_v4().to_string(),
@@ -577,15 +595,15 @@ impl ArbitrageDetector {
                             key_j.split('-').nth(1).unwrap_or("unknown").to_string(),
                         ],
                         path: vec![
-                            format!("{:?}", token_a),
-                            format!("{:?}", token_b),
-                            format!("{:?}", token_a),
+                            format!("0x{}", hex::encode(token_a)),
+                            format!("0x{}", hex::encode(token_b)),
+                            format!("0x{}", hex::encode(token_a)),
                         ],
-                        token_in: format!("{:?}", token_a),
-                        token_out: format!("{:?}", token_a),
+                        token_in: format!("0x{}", hex::encode(token_a)),
+                        token_out: format!("0x{}", hex::encode(token_a)),
                         amount_in: estimated_amount,
                         expected_amount_out: estimated_amount + (estimated_amount as f64 * profit_bps as f64 / 10000.0) as U256,
-                        expected_profit_usd: gross_profit_bps,
+                        expected_profit_usd: gross_profit_usd,
                         expected_profit_bps: profit_bps,
                         gas_estimate_usd: gas_cost_usd,
                         flash_loan_fee_usd,
@@ -1056,7 +1074,7 @@ impl FlashLoanArbitrageEngine {
         let detector = Arc::new(ArbitrageDetector::new(config.clone(), pool_monitor.clone()));
         let flash_loan_router = Arc::new(Self::build_router(&config));
         let executor = Arc::new(FlashLoanArbExecutor::new(config.clone(), flash_loan_router.clone()));
-        let profit_tracker = Arc::new(ProfitTracker::new(0.5)); // 0.5 ETH starting balance
+        let profit_tracker = Arc::new(ProfitTracker::new(0.0)); // starts at 0 — real balance is read from chain
 
         // Initialize pools
         pool_monitor.init_default_pools();
@@ -1091,8 +1109,6 @@ impl FlashLoanArbitrageEngine {
         let providers: Vec<Arc<dyn FLProvider>> = vec![
             Arc::new(AaveV3Provider::new(eth_pool, eth_data)),
             Arc::new(UniswapV3Provider::new(uni_factory, init_hash)),
-            // Mock provider for testing
-            Arc::new(MockProvider::new("MockFlash", 9, vec![[1u8; 20]]).with_gas(100_000).with_latency(Duration::from_millis(10))),
         ];
 
         info!("FlashLoanRouter initialized with {} providers", providers.len());

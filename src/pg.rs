@@ -283,6 +283,7 @@ impl OrderRow {
         let style: OrderStyle = serde_json::from_str(&self.style_json).unwrap_or(OrderStyle::Standard);
         Ok(Order {
             id: self.id,
+            id_tag: 0,
             user_id: self.user_id,
             pair: CompactString::from(self.pair),
             order_type,

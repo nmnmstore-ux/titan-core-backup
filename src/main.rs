@@ -1,4 +1,5 @@
 use tokio::net::TcpStream;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, error, warn, debug};
 use the_bridge_arbitrage::flash_loan_arb::{
@@ -42,9 +43,11 @@ mod wasm_engine;
 mod encrypted;
 mod memory;
 mod anti_debug;
-mod cloud;
-mod kyc;
-mod pipeline;
+ mod cloud;
+ mod kyc;
+ mod pipeline;
+ mod pool;
+ mod time_cache;
 mod auth;
 mod dashboard;
 mod sovereign;
@@ -197,9 +200,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
     info!("Server listening on port 8080");
 
+    let conn_permits = Arc::new(tokio::sync::Semaphore::new(256));
+
     loop {
         let (stream, _) = listener.accept().await?;
+        let permits = conn_permits.clone();
         tokio::spawn(async move {
+            let _permit = match permits.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
             if let Err(e) = handle_connection(stream).await {
                 debug!("Error handling connection: {}", e);
             }
@@ -208,20 +218,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
-    let mut buffer = [0u8; 1024];
+    let mut buffer = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
 
-    match stream.read(&mut buffer).await {
-        Ok(0) => return Ok(()),
-        Ok(n) => {
-            let request = String::from_utf8_lossy(&buffer[..n]);
-            debug!("Incoming request: {}", request);
-
-            let response = process_request(&request).await;
-            if let Err(e) = stream.write_all(response.as_bytes()).await {
-                debug!("Failed to write response: {}", e);
+    let _ = tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        async {
+            loop {
+                match stream.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buffer.extend_from_slice(&chunk[..n]);
+                        if buffer.len() >= 2 && buffer.windows(2).any(|w| w == b"\r\n") {
+                            break;
+                        }
+                        if buffer.len() > 8192 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
             }
-        }
-        Err(e) => debug!("Failed to read from connection: {}", e),
+        },
+    )
+    .await;
+
+    if buffer.is_empty() {
+        return Ok(());
+    }
+
+    let request = String::from_utf8_lossy(&buffer[..]);
+    debug!("Incoming request: {}", request);
+
+    let response = process_request(&request).await;
+    let status_line = if request.trim_start().starts_with("GET") {
+        "HTTP/1.1 200 OK\r\n"
+    } else {
+        "HTTP/1.1 200 OK\r\n"
+    };
+    let body = response.as_bytes();
+    let full = format!(
+        "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status_line.trim_end(),
+        body.len(),
+        response
+    );
+    if let Err(e) = stream.write_all(full.as_bytes()).await {
+        debug!("Failed to write response: {}", e);
     }
 
     Ok(())

@@ -12,3 +12,5 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
+rand = { workspace = true }
+parking_lot = { workspace = true }

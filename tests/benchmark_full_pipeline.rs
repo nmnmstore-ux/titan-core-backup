@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 #[path = "../src/types.rs"]
 mod types;
+#[path = "../src/time_cache.rs"]
+mod time_cache;
 #[path = "../src/matching.rs"]
 mod matching;
 #[path = "../src/orderbook.rs"]

@@ -160,7 +160,7 @@ pub struct DAGVertex {
 
 impl DAGVertex {
     pub fn compute_hash(&self) -> VertexHash {
-        let bytes = bincode::serialize(&(
+        let bytes = crate::types::bincode_serialize_direct(&(
             &self.parents, &self.operation, self.timestamp, &self.node_id, &self.creator_key,
         ))
         .unwrap_or_default();
@@ -191,7 +191,7 @@ impl DAGVertex {
 
     pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
         use ed25519_dalek::Signer;
-        let bytes = bincode::serialize(&(
+        let bytes = crate::types::bincode_serialize_direct(&(
             &self.parents, &self.operation, self.timestamp, &self.node_id, &self.creator_key,
         )).unwrap_or_default();
         let sig = signing_key.sign(&bytes);
@@ -203,7 +203,7 @@ impl DAGVertex {
             return false;
         }
         use ed25519_dalek::{Verifier, Signature};
-        let bytes = bincode::serialize(&(
+        let bytes = crate::types::bincode_serialize_direct(&(
             &self.parents, &self.operation, self.timestamp, &self.node_id, &self.creator_key,
         )).unwrap_or_default();
         let sig = match Signature::from_slice(&self.signature) {
@@ -372,7 +372,7 @@ impl DAGConsensus {
     }
 
     async fn send_message(&self, addr: &str, msg: &PeerMessage) -> Result<(), ConsensusError> {
-        let data = bincode::serialize(msg).map_err(|e| ConsensusError::Serialize(e.to_string()))?;
+        let data = crate::types::bincode_serialize_direct(msg).map_err(|e| ConsensusError::Serialize(e.to_string()))?;
         self.transport.send(addr, &data).await.map_err(|e| ConsensusError::Transport(e))
     }
 
@@ -382,7 +382,7 @@ impl DAGConsensus {
         // Start transport listener — handles accept + read in background
         let gossip_tx = self.gossip_tx.clone();
         let on_msg = Arc::new(move |data: Vec<u8>, _peer: String| {
-            if let Ok(msg) = bincode::deserialize::<PeerMessage>(&data) {
+            if let Ok(msg) = crate::types::bincode_deserialize_direct::<PeerMessage>(&data) {
                 let _ = gossip_tx.send(msg);
             }
         });
