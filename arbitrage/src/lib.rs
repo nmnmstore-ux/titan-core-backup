@@ -1474,6 +1474,7 @@ mod tests {
 
 // Flash Loan Arbitrage Engine (MVP)
 pub mod flash_loan_arb;
+pub mod sepolia_executor;
 pub mod flash_loan_arb_v2;
 pub mod rpc_fallback;
 

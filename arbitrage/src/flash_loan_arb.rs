@@ -17,7 +17,9 @@ use tokio::sync::RwLock as TokioRwLock;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use std::str::FromStr;
 
+use crate::sepolia_executor::SepoliaExecutor;
 use crate::PoolData;
 use the_bridge_flash_loan::{
     FlashLoanRouter, FlashLoanCallback, FlashLoanProvider as FLProvider,
@@ -32,6 +34,8 @@ use the_bridge_flash_loan::{
 pub type Address = [u8; 20];
 pub type H256 = [u8; 32];
 pub type U256 = u128;
+
+use ethers::core::types::{Address as EthAddress, U256 as EthU256};
 
 /// Configuration for the Flash Loan Arbitrage Engine
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1048,6 +1052,7 @@ pub struct FlashLoanArbitrageEngine {
     pub executor: Arc<FlashLoanArbExecutor>,
     pub profit_tracker: Arc<ProfitTracker>,
     pub flash_loan_router: Arc<FlashLoanRouter>,
+    pub sepolia_executor: Option<Arc<SepoliaExecutor>>,
     is_running: std::sync::atomic::AtomicBool,
     engine_stats: TokioRwLock<EngineStats>,
 }
@@ -1076,6 +1081,14 @@ impl FlashLoanArbitrageEngine {
         let executor = Arc::new(FlashLoanArbExecutor::new(config.clone(), flash_loan_router.clone()));
         let profit_tracker = Arc::new(ProfitTracker::new(0.0)); // starts at 0 — real balance is read from chain
 
+        // Real on-chain execution (Sepolia). Falls back to simulation when not configured.
+        let sepolia_executor = SepoliaExecutor::try_init().map(Arc::new);
+        if sepolia_executor.is_some() {
+            info!("FlashLoanArbitrageEngine: real Sepolia on-chain execution ENABLED");
+        } else {
+            info!("FlashLoanArbitrageEngine: real Sepolia on-chain execution DISABLED (simulation only)");
+        }
+
         // Initialize pools
         pool_monitor.init_default_pools();
 
@@ -1086,6 +1099,7 @@ impl FlashLoanArbitrageEngine {
             executor,
             profit_tracker,
             flash_loan_router,
+            sepolia_executor,
             is_running: std::sync::atomic::AtomicBool::new(false),
             engine_stats: TokioRwLock::new(EngineStats {
                 uptime_seconds: 0, total_scans: 0, total_opportunities_found: 0,
@@ -1115,6 +1129,85 @@ impl FlashLoanArbitrageEngine {
         FlashLoanRouter::new(providers)
     }
 
+    /// Executes an opportunity on Sepolia via the deployed FlashLoanArbitrage contract.
+    /// Uses the real contract (executeArbitrage) with a simulation guard that reverts
+    /// the attempt (no broadcast) when the swap would lose money.
+    async fn execute_sepolia(&self, ex: &SepoliaExecutor, opp: ArbOpportunity) -> ExecutedTrade {
+        let trade_id = Uuid::new_v4().to_string();
+        let executed_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let path = opp.path.clone();
+        let amount_in = opp.amount_in;
+        let expected_out = opp.expected_amount_out;
+
+        let build_fail = |error: String| ExecutedTrade {
+            id: trade_id.clone(), opportunity_id: opp.id.clone(),
+            chain: opp.chain.clone(), path: path.clone(),
+            token_in: opp.token_in.clone(), token_out: opp.token_out.clone(),
+            amount_borrowed: amount_in, amount_repaid: 0,
+            flash_loan_fee: 0, gross_profit: 0,
+            gas_cost: 0, gas_cost_usd: 0.0, net_profit: 0, net_profit_usd: 0.0,
+            provider: "SepoliaOnChain".into(),
+            tx_hash: None, success: false, error: Some(error),
+            executed_at, duration_ms: 0,
+        };
+
+        let asset = match path.first().and_then(|a| EthAddress::from_str(a).ok()) {
+            Some(a) => a,
+            None => return build_fail(format!("invalid asset address in path: {:?}", path.first())),
+        };
+        if path.len() < 2 {
+            return build_fail("sepolia path too short".into());
+        }
+        let fees = vec![3000u16; path.len() - 1];
+
+        let fee_bps = ex.current_fee_bps().unwrap_or(5);
+        let premium = (amount_in as u128) * (fee_bps as u128) / 10_000;
+        let expected_net = (expected_out as u128)
+            .saturating_sub(amount_in as u128)
+            .saturating_sub(premium);
+        let min_out = EthU256::from(expected_net * 50 / 100);
+        let recipient = ex.executor_address;
+
+        let result = ex
+            .execute_arbitrage(asset, amount_in as u128, path.clone(), fees, min_out, recipient)
+            .await;
+
+        if !result.success {
+            let mut t = build_fail(result.error.unwrap_or_else(|| "unknown sepolia failure".into()));
+            t.tx_hash = result.tx_hash;
+            t.duration_ms = result.duration_ms;
+            return t;
+        }
+
+        let gross_profit = result.profit_wei.map(|p| p.as_u128()).unwrap_or(0);
+        let gas_cost = result.gas_used.map(|g| g as u128 * 50_000_000_000u128).unwrap_or(0);
+        let net_profit = gross_profit.saturating_sub(gas_cost);
+        info!(
+            "Sepolia on-chain arb SUCCESS: gross={} wei gas={} wei net={} wei | tx={:?}",
+            gross_profit, gas_cost, net_profit, result.tx_hash
+        );
+
+        ExecutedTrade {
+            id: trade_id, opportunity_id: opp.id,
+            chain: opp.chain, path,
+            token_in: opp.token_in, token_out: opp.token_out,
+            amount_borrowed: amount_in,
+            amount_repaid: amount_in + premium,
+            flash_loan_fee: premium,
+            gross_profit,
+            gas_cost,
+            gas_cost_usd: 0.0,
+            net_profit,
+            net_profit_usd: 0.0,
+            provider: "SepoliaOnChain".into(),
+            tx_hash: result.tx_hash,
+            success: true,
+            error: None,
+            executed_at, duration_ms: result.duration_ms,
+        }
+    }
+
+
     /// Start the engine (main event loop)
     pub async fn run(&self) -> Result<(), String> {
         if self.is_running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -1124,6 +1217,14 @@ impl FlashLoanArbitrageEngine {
 
         let start_time = Instant::now();
         info!("Flash Loan Arbitrage Engine started");
+
+        // Probe Sepolia flash fee once (real on-chain readiness check).
+        if let Some(ex) = &self.sepolia_executor {
+            match ex.load_fee_bps().await {
+                Ok(fee) => info!("Sepolia Aave V3 flash fee = {} bps ({}%)", fee.as_u64(), fee.as_u64() as f64 / 100.0),
+                Err(e) => warn!("Sepolia executor readiness probe failed: {}", e),
+            }
+        }
 
         let mut scan_interval = time::interval(Duration::from_millis(self.config.scan_interval_ms));
 
@@ -1158,7 +1259,17 @@ impl FlashLoanArbitrageEngine {
                 }
 
                 if opp.is_profitable(self.config.min_profit_usd, self.config.min_profit_bps) {
-                    let trade = self.executor.execute(opp.clone()).await;
+                    let trade = if opp.chain.eq_ignore_ascii_case("sepolia") {
+                        match &self.sepolia_executor {
+                            Some(ex) => self.execute_sepolia(ex, opp.clone()).await,
+                            None => {
+                                warn!("Sepolia opportunity but on-chain executor not configured — falling back to simulation");
+                                self.executor.execute(opp.clone()).await
+                            }
+                        }
+                    } else {
+                        self.executor.execute(opp.clone()).await
+                    };
                     self.profit_tracker.record_trade(trade.clone()).await;
 
                     if trade.success {

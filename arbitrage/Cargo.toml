@@ -20,6 +20,7 @@ rand = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+ethers = { workspace = true }
 reqwest = { workspace = true }
 tiny-keccak = { workspace = true }
 the-bridge-core = { path = "../core" }
