@@ -6,8 +6,8 @@ pragma solidity ^0.8.24;
 //
 // Executes Aave V3 flash-loan based cross-pool arbitrage:
 // borrow an asset via Aave V3 `flashLoanSimple`, swap through a
-// Uniswap V3 multi-hop `path`, repay principal + flash fee, and
-// keep the remainder as profit.
+// Uniswap UniversalRouter multi-hop `path` (V3_SWAP_EXACT_IN),
+// repay principal + flash fee, and keep the remainder as profit.
 //
 // Security posture:
 //   - Only the Aave V3 pool may trigger `executeOperation`.
@@ -42,24 +42,15 @@ interface IPool {
     ) external returns (bool);
 }
 
-interface ISwapRouter {
-    // Uniswap V3 SwapRouter02: exactInputSingle
-    function exactInputSingle(
-        address tokenIn,
-        address tokenOut,
-        uint24 fee,
-        address recipient,
-        uint256 deadline,
-        uint256 amountIn,
-        uint256 amountOutMinimum,
-        uint160 sqrtPriceLimitX96
-    ) external payable returns (uint256 amountOut);
+interface IUniversalRouter {
+    // Uniswap UniversalRouter: execute(bytes commands, bytes[] inputs)
+    function execute(bytes calldata commands, bytes[] calldata inputs) external payable;
 }
 
-// Aave V3 Pool, mainnet.
-address constant AAVE_V3_POOL_MAINNET = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
-// Uniswap V3 SwapRouter02, mainnet.
-address constant UNISWAP_V3_ROUTER_MAINNET = 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45;
+// Aave V3 Pool, Sepolia.
+address constant AAVE_V3_POOL_SEPOLIA = 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951;
+// Uniswap UniversalRouter, Sepolia (used by Uniswap UI).
+address constant UNIVERSAL_ROUTER_SEPOLIA = 0x3fC91A3afd70395Cd496C647d5a6CC9D4B2b7FAD;
 
 contract FlashLoanArbitrage {
     address public immutable pool;
@@ -159,7 +150,9 @@ contract FlashLoanArbitrage {
 
         uint256 balanceBefore = IERC20(asset).balanceOf(address(this));
 
-        IERC20(asset).approve(swapRouter, amount);
+        // Seed the UniversalRouter with the flash-borrowed input tokens.
+        require(IERC20(asset).approve(swapRouter, amount), "approve router failed");
+        require(IERC20(asset).transfer(swapRouter, amount), "seed router failed");
 
         uint256 out = _swapPath(path, fees, amount, balanceBefore);
 
@@ -181,34 +174,37 @@ contract FlashLoanArbitrage {
         return true;
     }
 
-    /// Swap through a sequence of Uniswap V3 pools (multi-hop path).
+    /// Swap through a sequence of Uniswap V3 pools via the UniversalRouter
+    /// (command 0x00 = V3_SWAP_EXACT_IN, payerIsUser = false).
     function _swapPath(
         address[] memory path,
         uint24[] memory fees,
         uint256 amountIn,
         uint256 balanceBefore
     ) internal returns (uint256 amountOut) {
-        uint256 cur = amountIn;
-        for (uint256 i = 0; i + 1 < path.length; i++) {
-            uint256 minOut = (i + 2 == path.length)
-                ? (cur * (10000 - slipProtectionBps)) / 10000
-                : 1;
-
-            uint256 received = ISwapRouter(swapRouter).exactInputSingle(
-                path[i],
-                path[i + 1],
-                fees[i],
-                address(this),
-                block.timestamp + 180,
-                cur,
-                minOut,
-                0
-            );
-            if (received == 0) revert SwapFailed();
-            cur = received;
+        // Build the concatenated V3 path: tokenIn, fee, tokenMid, fee, ..., tokenOut
+        bytes memory v3Path = abi.encodePacked(path[0], fees[0]);
+        for (uint256 i = 1; i < path.length - 1; i++) {
+            v3Path = abi.encodePacked(v3Path, path[i], fees[i]);
         }
+        v3Path = abi.encodePacked(v3Path, path[path.length - 1]);
 
-        if (cur <= balanceBefore) revert SwapFailed();
-        return cur;
+        uint256 minOut = (amountIn * (10000 - slipProtectionBps)) / 10000;
+
+        bytes memory commands = abi.encodePacked(bytes1(uint8(0x00))); // V3_SWAP_EXACT_IN
+
+        bytes[] memory inputs = new bytes[](1);
+        inputs[0] = abi.encode(
+            address(this), // recipient of swap output
+            amountIn,
+            minOut,
+            v3Path,
+            false // payerIsUser = false: funds already in the router
+        );
+
+        IUniversalRouter(swapRouter).execute(commands, inputs);
+
+        amountOut = IERC20(path[path.length - 1]).balanceOf(address(this));
+        if (amountOut <= balanceBefore) revert SwapFailed();
     }
 }
