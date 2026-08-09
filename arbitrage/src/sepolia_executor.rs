@@ -466,5 +466,38 @@ mod tests {
         assert!(res.tx_hash.is_none(), "must not broadcast a lossy swap");
         eprintln!("live guard result: {:?}", res.error);
     }
+
+    #[tokio::test]
+    #[ignore = "live Sepolia broadcast test — requires SEPOLIA_RPC_URL, EXECUTOR_KEY in env"]
+    async fn live_broadcast_smoke_test() {
+        use ethers::core::types::TransactionRequest;
+
+        let ex = SepoliaExecutor::try_init().expect("env must be configured");
+
+        // Send a real (tiny) self-transfer to prove the full broadcast path:
+        // sign with EXECUTOR_KEY -> send to mempool -> poll receipt -> confirm.
+        let amount = EthU256::from(100_000_000_000_000u64); // 0.0001 ETH
+        let tx = TransactionRequest::new().to(ex.executor_address).value(amount);
+
+        let pending = ex
+            .client
+            .send_transaction(tx, None)
+            .await
+            .expect("broadcast failed");
+        let hash = pending.tx_hash();
+
+        let receipt = match tokio::time::timeout(RECEIPT_POLL_TIMEOUT, pending).await {
+            Ok(Ok(Some(r))) => r,
+            Ok(Ok(None)) => panic!("tx dropped — no receipt found"),
+            Ok(Err(e)) => panic!("provider error: {e}"),
+            Err(_) => panic!("receipt timeout after {}s", RECEIPT_POLL_TIMEOUT.as_secs()),
+        };
+        assert_eq!(receipt.status, Some(EthU64::from(1u64)), "tx must succeed");
+        assert!(receipt.gas_used.is_some(), "gasUsed must be present");
+        eprintln!(
+            "smoke tx {} confirmed: status=1 gasUsed={:?}",
+            hash, receipt.gas_used
+        );
+    }
 }
 

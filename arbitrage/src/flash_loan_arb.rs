@@ -101,7 +101,7 @@ impl Default for FlashLoanArbConfig {
             max_daily_loss_usd: 10_000.0,
             max_consecutive_failures: 5,
             circuit_breaker_cooldown_secs: 300,
-            enabled_chains: vec!["ethereum".into(), "bsc".into(), "polygon".into()],
+            enabled_chains: vec!["ethereum".into(), "bsc".into(), "polygon".into(), "sepolia".into()],
             enabled_dexes: vec!["uniswap".into(), "sushiswap".into(), "balancer".into()],
             tracked_tokens: vec![
                 "WETH".into(), "USDC".into(), "USDT".into(), "DAI".into(),
@@ -122,6 +122,7 @@ pub struct ArbOpportunity {
     pub chain: String,
     pub dexes: Vec<String>,
     pub path: Vec<String>,
+    pub fees: Vec<u16>,
     pub token_in: String,
     pub token_out: String,
     pub amount_in: U256,
@@ -287,6 +288,7 @@ impl DexPoolMonitor {
             ("polygon".into(), self.config.polygon_rpc_url.clone()),
             ("arbitrum".into(), self.config.arb_rpc_url.clone()),
             ("optimism".into(), self.config.op_rpc_url.clone()),
+            ("sepolia".into(), std::env::var("SEPOLIA_RPC_URL").unwrap_or_else(|_| "https://ethereum-sepolia-rpc.publicnode.com".into())),
         ].into();
 
         // Known pool addresses (mainnet)
@@ -548,19 +550,20 @@ impl ArbitrageDetector {
         }
 
         // Linear arbitrage: find price differences between pools with same token pair
-        // Group pools by token pair
-        let mut pair_pools: HashMap<(Address, Address), Vec<(String, PoolData)>> = HashMap::new();
+        // Group pools by (chain, token pair) so cross-chain pools are never compared.
+        let mut pair_pools: HashMap<(String, Address, Address), Vec<(String, PoolData)>> = HashMap::new();
         for (key, pool) in &all_pools {
+            let chain = key.split('-').next().unwrap_or("ethereum").to_string();
             let pair = if pool.token_a < pool.token_b {
                 (pool.token_a, pool.token_b)
             } else {
                 (pool.token_b, pool.token_a)
             };
-            pair_pools.entry(pair).or_default().push((key.clone(), pool.clone()));
+            pair_pools.entry((chain, pair.0, pair.1)).or_default().push((key.clone(), pool.clone()));
         }
 
         // For each token pair with multiple pools, check for arbitrage
-        for ((token_a, token_b), pools) in &pair_pools {
+        for ((chain, token_a, token_b), pools) in &pair_pools {
             if pools.len() < 2 { continue; }
 
             // Compare prices across pools
@@ -583,8 +586,23 @@ impl ArbitrageDetector {
 
                     if profit_bps < self.config.min_profit_bps { continue; }
 
+                    // Fee order follows direction: we buy token_b in the CHEAPER pool
+                    // (higher price0 = more token_b per token_a) and sell it in the
+                    // pricier one, so the first hop's pool fee comes first.
+                    let (buy_fee, sell_fee) = if price_i > price_j {
+                        (pool_i.fee as u16, pool_j.fee as u16)
+                    } else {
+                        (pool_j.fee as u16, pool_i.fee as u16)
+                    };
+
                     // Estimate profit in USD (simplified)
-                    let estimated_amount = 1_000_000_000u128; // 1 token (18 decimals)
+                    // Sepolia: use a real test position (10 tokens) so the on-chain
+                    // executor flashes a meaningful amount instead of a dust placeholder.
+                    let estimated_amount = if chain == "sepolia" {
+                        10u128 * 10u128.pow(18)
+                    } else {
+                        1_000_000_000u128 // 1 token (18 decimals) placeholder
+                    };
                     let position_usd = 10_000.0; // simulated scan position
                     let gross_profit_usd = (profit_bps as f64 / 10000.0) * position_usd;
                     let gas_cost_usd = 6.0;
@@ -593,7 +611,7 @@ impl ArbitrageDetector {
 
                     let opp = ArbOpportunity {
                         id: Uuid::new_v4().to_string(),
-                        chain: key_i.split('-').next().unwrap_or("ethereum").to_string(),
+                        chain: chain.clone(),
                         dexes: vec![
                             key_i.split('-').nth(1).unwrap_or("unknown").to_string(),
                             key_j.split('-').nth(1).unwrap_or("unknown").to_string(),
@@ -603,6 +621,7 @@ impl ArbitrageDetector {
                             format!("0x{}", hex::encode(token_b)),
                             format!("0x{}", hex::encode(token_a)),
                         ],
+                        fees: vec![buy_fee, sell_fee],
                         token_in: format!("0x{}", hex::encode(token_a)),
                         token_out: format!("0x{}", hex::encode(token_a)),
                         amount_in: estimated_amount,
@@ -1158,7 +1177,12 @@ impl FlashLoanArbitrageEngine {
         if path.len() < 2 {
             return build_fail("sepolia path too short".into());
         }
-        let fees = vec![3000u16; path.len() - 1];
+        let fees = if !opp.fees.is_empty() && opp.fees.len() == path.len() - 1 {
+            opp.fees.clone()
+        } else {
+            warn!("sepolia opp {} missing per-hop fees; defaulting to 3000s", opp.id);
+            vec![3000u16; path.len() - 1]
+        };
 
         let fee_bps = ex.current_fee_bps().unwrap_or(5);
         let premium = (amount_in as u128) * (fee_bps as u128) / 10_000;
@@ -1417,6 +1441,7 @@ mod tests {
             chain: "ethereum".into(),
             dexes: vec!["uniswap-v3".into(), "sushiswap".into()],
             path: vec!["A".into(), "B".into(), "A".into()],
+            fees: vec![],
             token_in: "WETH".into(),
             token_out: "WETH".into(),
             amount_in: 1_000_000,
@@ -1453,6 +1478,7 @@ mod tests {
             id: "test".into(), chain: "ethereum".into(),
             dexes: vec!["uniswap".into()],
             path: vec!["A".into(), "B".into()],
+            fees: vec![],
             token_in: "WETH".into(), token_out: "WETH".into(),
             amount_in: 1000, expected_amount_out: 1010,
             expected_profit_usd: 10.0, expected_profit_bps: 10,
@@ -1536,6 +1562,7 @@ mod tests {
         let opp = ArbOpportunity {
             chain: "test".into(), id: "test".into(),
             dexes: vec![], path: vec![],
+            fees: vec![],
             token_in: "WETH".into(), token_out: "WETH".into(),
             amount_in: 100, expected_amount_out: 101,
             expected_profit_usd: 1.0, expected_profit_bps: 10,
