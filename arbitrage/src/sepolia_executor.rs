@@ -439,4 +439,32 @@ mod tests {
         std::env::remove_var("EXECUTOR_KEY");
         assert!(SepoliaExecutor::try_init().is_none());
     }
+
+    #[tokio::test]
+    #[ignore = "live Sepolia test — requires SEPOLIA_RPC_URL, ARBITRAGE_CONTRACT, EXECUTOR_KEY in env"]
+    async fn live_simulation_guard_blocks_lossy_path() {
+        let ex = SepoliaExecutor::try_init().expect("env must be configured");
+        let dai = "0xFF34B3d4Aee8ddCd6F9AFFFB6Fe49bD371b8a357".to_string();
+        let weth = "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14".to_string();
+        let path = vec![dai.clone(), weth, dai.clone()];
+        let fees = vec![3000u16, 3000u16];
+
+        let res = ex
+            .execute_arbitrage(
+                EthAddress::from_str(&dai).unwrap(),
+                1_000_000_000_000_000_000u128, // 1 DAI
+                path,
+                fees,
+                EthU256::from(0u64),
+                ex.executor_address,
+            )
+            .await;
+
+        // On Sepolia testnet the round-trip loses money, so the simulation guard
+        // must abort BEFORE broadcasting (no gas spent, no tx hash).
+        assert!(!res.success, "expected simulation to block the lossy path");
+        assert!(res.tx_hash.is_none(), "must not broadcast a lossy swap");
+        eprintln!("live guard result: {:?}", res.error);
+    }
 }
+
