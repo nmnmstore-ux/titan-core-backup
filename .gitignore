@@ -25,3 +25,11 @@ local-additions/config-manager/.env.local
 local-additions/config-manager/Cargo.lock
 local-additions/config-manager/.aws
 local-additions/config-manager/.ssh
+
+# Secrets - added 2026-08-27
+.env.bak*
+.env.*.bak
+*.bak
+.executor_key
+**/*.bak
+
