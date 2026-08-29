@@ -22,7 +22,7 @@ use tracing::info;
 // We define the standard. They comply.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct THE-BridgeNodeRegistration {
+pub struct THEBridgeNodeRegistration {
     pub node_id: String,
     pub institution_name: String,
     pub institution_type: InstitutionType,
@@ -45,7 +45,7 @@ pub enum InstitutionType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct THE-BridgePaymentOrder {
+pub struct THEBridgePaymentOrder {
     pub order_id: String,
     pub from_swift_address: String,
     pub to_local_account: String,
@@ -64,7 +64,7 @@ pub enum SettlementPriority {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct THE-BridgeSettlementProof {
+pub struct THEBridgeSettlementProof {
     pub order_id: String,
     pub institution_node_id: String,
     pub settled: bool,
@@ -80,7 +80,7 @@ pub struct THE-BridgeSettlementProof {
 // No permission needed — just follow the spec.
 
 pub struct NodeRegistry {
-    nodes: Arc<std::sync::RwLock<Vec<THE-BridgeNodeRegistration>>>,
+    nodes: Arc<std::sync::RwLock<Vec<THEBridgeNodeRegistration>>>,
     total_settlements: AtomicU64,
     total_volume: AtomicU64,
 }
@@ -96,7 +96,7 @@ impl NodeRegistry {
 
     /// ANY institution can register itself. No approval needed.
     /// The network validates their TEE attestation automatically.
-    pub fn register_node(&self, registration: THE-BridgeNodeRegistration) -> Result<(), String> {
+    pub fn register_node(&self, registration: THEBridgeNodeRegistration) -> Result<(), String> {
         let mut nodes = self.nodes.write().map_err(|e| e.to_string())?;
         // Check for duplicate
         if nodes.iter().any(|n| n.node_id == registration.node_id) {
@@ -112,12 +112,12 @@ impl NodeRegistry {
         Ok(())
     }
 
-    pub fn record_settlement(&self, order: &THE-BridgePaymentOrder) {
+    pub fn record_settlement(&self, order: &THEBridgePaymentOrder) {
         self.total_settlements.fetch_add(1, Ordering::Relaxed);
         self.total_volume.fetch_add(order.amount as u64, Ordering::Relaxed);
     }
 
-    pub fn get_nodes(&self) -> Vec<THE-BridgeNodeRegistration> {
+    pub fn get_nodes(&self) -> Vec<THEBridgeNodeRegistration> {
         self.nodes.read().map(|n| n.clone()).unwrap_or_default()
     }
 
@@ -150,7 +150,7 @@ struct AppState {
 
 async fn register_institution(
     State(state): State<AppState>,
-    Json(reg): Json<THE-BridgeNodeRegistration>,
+    Json(reg): Json<THEBridgeNodeRegistration>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     match state.registry.register_node(reg) {
         Ok(_) => Ok(Json(serde_json::json!({
@@ -170,21 +170,23 @@ async fn list_institutions(
 
 async fn settle_payment(
     State(state): State<AppState>,
-    Json(order): Json<THE-BridgePaymentOrder>,
+    Json(order): Json<THEBridgePaymentOrder>,
 ) -> Json<serde_json::Value> {
     state.registry.record_settlement(&order);
+    let oid = order.order_id.clone();
+    let nid = order.institution_node_id.clone();
     Json(serde_json::json!({
         "status": "settled",
-        "order_id": order.order_id,
-        "institution_node_id": order.institution_node_id,
-        "proof": THE-BridgeSettlementProof {
+        "order_id": oid,
+        "institution_node_id": nid,
+        "proof": THEBridgeSettlementProof {
             order_id: order.order_id,
             institution_node_id: order.institution_node_id,
             settled: true,
             transaction_ref: uuid::Uuid::new_v4().to_string(),
             settled_at: chrono::Utc::now().timestamp(),
             tee_attestation: "sgx-quote-verified".into(),
-            dot_receipt: format!("dot:{}:{}", order.order_id, order.institution_node_id),
+            dot_receipt: format!("dot:{}:{}", oid, nid),
         },
         "message": "Settlement complete. DOT receipt generated.",
     }))
@@ -198,9 +200,7 @@ async fn get_stats(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("the_bridge_open_standard=info")
-        .init();
+    tracing_subscriber::fmt::init();
 
     let registry = Arc::new(NodeRegistry::new());
     let state = AppState { registry };
@@ -219,6 +219,6 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3030").await?;
     info!("📍 Open Payment Standard API on :3030");
-    axum::serve(listener, app.into_make_service()).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }

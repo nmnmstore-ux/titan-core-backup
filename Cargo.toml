@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "zk-tls",
     "core",
     "flash-loan",
     "flash-loan-v2",
@@ -10,7 +11,17 @@ members = [
     "integration",
     "cross-venue-arb",
     "super-arb",
+    "mev-engine-v2",
+    "engine-coordinator",
+    "exchange-adapters",
+    "cex-arb",
+    "market-making",
+    "inventory-manager",
+    "state-radar",
+    "behavioral-graph",
+    "capital-flow",
     "A-core-infrastructure/config-manager",
+    "F-compliance",
 ]
 default-members = ["."]
 
@@ -47,7 +58,7 @@ sha3 = "0.10"
 hmac = "0.12"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = "0.6"
-tiny-keccak = "2.0"
+tiny-keccak = { version = "2.0", features = ["keccak"] }
 secp256k1 = { version = "0.28", features = ["rand", "recovery", "global-context"] }
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
@@ -83,7 +94,7 @@ wasmtime = "14"
 tikv-jemallocator = "0.6"
 io-uring = "0.6"
 compact_str = { version = "0.8", features = ["serde"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "sqlite", "uuid", "chrono", "json"] }
 async-trait = "0.1"
 once_cell = { version = "1", features = ["std"] }
 page_size = "0.6"
@@ -97,6 +108,17 @@ tower-http = { version = "0.6", features = ["cors"] }
 num_cpus = "1"
 libc = "0.2"
 base64 = "0.22"
+nom = "7"
+libp2p = { version = "0.53", features = ["tcp", "dns", "noise", "yamux", "identify", "ping", "kad", "gossipsub"] }
+petgraph = "0.6"
+ahash = "0.8"
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+bellman = "0.14"
+bls12_381 = "0.8"
+group = "0.14"
+ff = "0.13"
+tfhe = { version = "1.7", features = ["boolean", "shortint", "integer", "x86_64"] }
+ml-dsa = "0.1"
 
 [package]
 name = "the-bridge-matching-engine"
@@ -251,6 +273,7 @@ compact_str = { workspace = true }
 sqlx = { workspace = true }
 async-trait = { workspace = true }
 tiny-keccak = { workspace = true }
+lettre = { workspace = true }
 secp256k1 = { workspace = true }
 ed25519-dalek = { workspace = true }
 hmac = { workspace = true }
@@ -277,6 +300,15 @@ the-bridge-cross-venue-arb = { path = "cross-venue-arb"}
 the-bridge-super-arb = { path = "super-arb" }
 the-bridge-chaos = { path = "chaos" }
 the-bridge-integration = { path = "integration" }
+the-bridge-mev-engine-v2 = { path = "mev-engine-v2" }
+the-bridge-engine-coordinator = { path = "engine-coordinator" }
+the-bridge-exchange-adapters = { path = "exchange-adapters" }
+the-bridge-cex-arb = { path = "cex-arb" }
+the-bridge-market-making = { path = "market-making" }
+the-bridge-inventory-manager = { path = "inventory-manager" }
+state-radar = { path = "state-radar" }
+behavioral-graph = { path = "behavioral-graph" }
+capital-flow = { path = "capital-flow" }
 
 [dev-dependencies]
 the-bridge-core = { path = "core" }
@@ -287,6 +319,15 @@ the-bridge-cross-venue-arb = { path = "cross-venue-arb" }
 the-bridge-super-arb = { path = "super-arb" }
 the-bridge-chaos = { path = "chaos" }
 the-bridge-integration = { path = "integration" }
+the-bridge-mev-engine-v2 = { path = "mev-engine-v2" }
+the-bridge-engine-coordinator = { path = "engine-coordinator" }
+the-bridge-exchange-adapters = { path = "exchange-adapters" }
+the-bridge-cex-arb = { path = "cex-arb" }
+the-bridge-market-making = { path = "market-making" }
+the-bridge-inventory-manager = { path = "inventory-manager" }
+state-radar = { path = "state-radar" }
+behavioral-graph = { path = "behavioral-graph" }
+capital-flow = { path = "capital-flow" }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }

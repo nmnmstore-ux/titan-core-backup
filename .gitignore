@@ -33,3 +33,15 @@ local-additions/config-manager/.ssh
 .executor_key
 **/*.bak
 
+
+# Build outputs - added 2026-08-27
+Z-smart-contracts/out/
+Z-smart-contracts/cache/
+Z-zk-layer/build/
+Z-zk-layer/trusted_setup/*.ptau
+Z-zk-layer/circuits/circomlib/
+
+
+.env.rpcbak*
+.env.*
+

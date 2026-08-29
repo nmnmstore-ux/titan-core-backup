@@ -13,6 +13,19 @@
 
 ---
 
+## [2026-08-11] تدقيق — التحقق من Engine 7: Fiat ATM Bridge (Task 0.8)
+- الملفات: Z-atm-gateway/src/main.rs:154، J-local-payments/src/main.rs:224، Z-atm-gateway/Cargo.toml:6-14، J-local-payments/Cargo.toml:6-23
+- النتيجة: ✅ توثيق الحقيقة. الـ crates موجودة على المسارات المطلوبة (root + local-additions mirror). لكنها **STUB**: J-local-payments يعلن rsa/aes-gcm/hmac/sha2 deps لكنه لا يستخدمها — tee_attestation="sgx-quote-verified" سلسلة نصية ثابتة (main.rs:186)، dot_receipt من دالة تنسيق (main.rs:187). Z-atm-gateway بدون أي deps تشفير — tee_attested=true مجرد خانة struct (main.rs:80,89)، وقائمة الـ ATMs ثابتة في الذاكرة (main.rs:62-71). الأكواخ غير مربوطة بـ workspace root/Cargo.toml (the-bridge-matching-engine binary). لا دمج مع Engine 1 (matching) أو Engine 4 (DOT).
+- الكاتب: deepseek-r1 (opencode) — تمت المراجعة بواسطة self-review — ملاحظات: SYSTEM_STATE.md Engine 7 section مُحدَّثة بالدليل file:line. مهمة 0.8 في EXECUTION_AGENDA.md منضبطة إلى ✅.
+
+---
+
+## [2026-08-10] بناء — قفل SYSTEM_STATE.md Revision B (Sovereign Constitution) بالحقيقة المؤكدة
+- الملفات: SYSTEM_STATE.md (إعادة كتابة كاملة — 473 سطرًا)، EXECUTION_AGENDA.md (إضافة Phase 0 Hard-Lock: 10 مهام)، expansion_modules/integration/src/auto_health_guard.rs (إصلاح &state في اختبارين)، expansion_modules/integration/src/maintenance.rs (clippy manual-range-contains)
+- النتيجة: فحص تناقضات §6.1 ضد الكود الفعلي — 9 ادعاءات سابقة صُحّحت بدليل file:line: (1) quantum agent غير موجود (الفليت 4 وليس 5)، (2) SP1/Circom صفر deps والـ proofs SHA-256 (zk_snark.rs:405)، (3) sequencer مجرد AtomicU64 cursor (pipeline.rs:178)، (4) Ghost mixer XOR 0xDEADBEEF + brokers مزيفة (ghost_integration.rs:704)، (5) DOT DashMap في الذاكرة لا Polkadot (dot.rs:22)، (6) bare_metal_setup.sh في الجذر لا G-infrastructure/server-setup، (7) matching engine في root/src/ لا A-core-infrastructure، (8) local-additions mirror غير مربوط بـ build. أثناء المراجعة النهائية اكتُشف أن BMM X⁴Y=K **حقيقي** (src/bmm_amm.rs:148) — صحّحنا تصحيحنا السابق؛ pricing agent منفصل power-law. تم التحقق النهائي: 31/31 tests تمر + clippy -D warnings صفر.
+- الكاتب: deepseek-r1 (opencode/big-pickle) — تمت المراجعة بواسطة self-review بعد اكتشاف خطأ BMM — ملاحظات: نظام الملفات owned بـ Moham → الكتابة عبر sudo. local-additions غير مبنية من root Cargo.toml.
+
+
 ## [2026-08-06] ميزة — تفعيل Dark Pool Manager (initialize + start) + توحيد تشغيل Flash Loan Engine
 - الملفات: src/main_new.rs (أضيف tokio::spawn لـ Dark Pool مع 50s delay)، src/dark_pool_manager.rs (غُيّر `start(&mut self)` → `start(&self)`)
 - النتيجة: Dark Pool Manager الآن يُهيَّأ ويُشغَّل تلقائيًا عند بدء api-server (كان غير مربوط، component_up=0). تُنشأ الـ dependencies: EncryptedMempool (ThresholdCrypto)، FBAMatchingEngine، GhostCloak، SmartOrderRouter، OrderBookManager. الآن component_up{component="darkpool"}=1. التأكيد: كل 13 مكونًا برقم 1 في /metrics، وكل محركات Phase 1 تعمل: MEV (24,287+ scans)، Flash Loan (1,276+ scans، 1 pool)، Cross-Venue (1,296+ scans)، Super Arb (1,726+ scans).

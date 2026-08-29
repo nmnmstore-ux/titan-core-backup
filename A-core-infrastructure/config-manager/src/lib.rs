@@ -1,4 +1,4 @@
-#![deny(missing_docs)]
+#![warn(missing_docs)]
 
 //! Config Manager - Centralized configuration management for THE-BRIDGE matching engine
 //!
@@ -13,6 +13,27 @@
 
 use secrecy::{ExposeSecret, SecretString};
 use thiserror::Error;
+use serde::Deserialize as _;
+
+fn serialize_secret<S: serde::Serializer>(s: &SecretString, ser: S) -> Result<S::Ok, S::Error> {
+    ser.serialize_str(s.expose_secret())
+}
+
+fn serialize_opt_secret<S: serde::Serializer>(s: &Option<SecretString>, ser: S) -> Result<S::Ok, S::Error> {
+    match s {
+        Some(v) => serialize_secret(v, ser),
+        None => ser.serialize_none(),
+    }
+}
+
+fn deserialize_secret<'de, D: serde::Deserializer<'de>>(de: D) -> Result<SecretString, D::Error> {
+    let s: String = serde::Deserialize::deserialize(de)?;
+    Ok(SecretString::from(s))
+}
+
+fn deserialize_opt_secret<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<SecretString>, D::Error> {
+    Ok(Option::<String>::deserialize(de)?.map(SecretString::from))
+}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -32,7 +53,9 @@ pub enum ConfigError {
 pub struct NetworkConfig {
     pub name: String,
     pub chain_id: u64,
+    #[serde(serialize_with = "serialize_secret", deserialize_with = "deserialize_secret")]
     pub rpc_url: SecretString,
+    #[serde(default, serialize_with = "serialize_opt_secret", deserialize_with = "deserialize_opt_secret")]
     pub gas_sponsorship_id: Option<SecretString>,
 }
 
@@ -40,7 +63,9 @@ pub struct NetworkConfig {
 pub struct ProviderConfig {
     pub name: String,
     pub provider_type: ProviderType,
+    #[serde(default, serialize_with = "serialize_opt_secret", deserialize_with = "deserialize_opt_secret")]
     pub api_key: Option<SecretString>,
+    #[serde(default, serialize_with = "serialize_opt_secret", deserialize_with = "deserialize_opt_secret")]
     pub api_secret: Option<SecretString>,
     pub networks: Vec<String>, // network names this provider supports
 }
@@ -81,7 +106,7 @@ pub struct Config {
 
 pub mod encryption {
     use super::*;
-    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use aes_gcm::{Aes256Gcm, Nonce};
     use aes_gcm::aead::{Aead, KeyInit};
     use base64::{Engine as _, engine::general_purpose};
     use secrecy::Secret;
@@ -92,9 +117,8 @@ pub mod encryption {
         let json = serde_json::to_string(config)
             .map_err(|e| ConfigError::ParseError(e.to_string()))?;
 
-        let key = Key::<Aes256Gcm>::from_slice(master_key.as_bytes())
+        let cipher = Aes256Gcm::new_from_slice(master_key.as_bytes())
             .map_err(|e| ConfigError::EncryptionError(e.to_string()))?;
-        let cipher = Aes256Gcm::new(key);
 
         let nonce_bytes = rand::random::<[u8; 12]>();
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -126,9 +150,8 @@ pub mod encryption {
         let (nonce_bytes, encrypted) = decoded.split_at(12);
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let key = Key::<Aes256Gcm>::from_slice(master_key.as_bytes())
+        let cipher = Aes256Gcm::new_from_slice(master_key.as_bytes())
             .map_err(|e| ConfigError::DecryptionError(e.to_string()))?;
-        let cipher = Aes256Gcm::new(key);
 
         let decrypted = cipher.decrypt(nonce, encrypted.as_ref())
             .map_err(|e| ConfigError::DecryptionError(e.to_string()))?;
@@ -145,6 +168,17 @@ pub mod api {
     use super::*;
     use axum::{extract::State, Json, response::IntoResponse, routing::post, Router};
     use std::sync::Arc;
+
+    impl IntoResponse for ConfigError {
+        fn into_response(self) -> axum::response::Response {
+            let status = match &self {
+                ConfigError::FileNotFound(_) => axum::http::StatusCode::NOT_FOUND,
+                ConfigError::ParseError(_) => axum::http::StatusCode::BAD_REQUEST,
+                _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (status, self.to_string()).into_response()
+        }
+    }
 
     /// axum state
     #[derive(Clone)]

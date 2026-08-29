@@ -1,0 +1,425 @@
+{
+  "$schema": "the-bridge-engines-registry",
+  "version": "1.0.0",
+  "updated": "2026-08-14",
+  "generated_by": "openCode",
+  "layers": {
+    "layer_1_core": "Ultra-Low Latency Rust Kernel (Kernel-Bypass / TEE / Memory)",
+    "layer_2_stealth": "Stealth & Zero-Knowledge Privacy Layer (Dark Pool / ZK-TLS)",
+    "layer_3_capital": "Unified Capital & Cross-Engine Profit Graph",
+    "layer_4_mesh": "Autonomous Multi-Agent Swarm Mesh",
+    "layer_5_brain": "Autonomous Metaprogramming & Genetic Evolution Engine"
+  },
+  "engines": [
+    {
+      "id": "core",
+      "crate": "core",
+      "path": "core",
+      "layer": "layer_1_core",
+      "description": "النواة والبنية الأساسية عالية الأداء (مطابقة، تخصيص، ذاكرة)",
+      "status": "built",
+      "dependencies": [],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "config-manager",
+      "crate": "A-core-infrastructure/config-manager",
+      "path": "A-core-infrastructure/config-manager",
+      "layer": "layer_1_core",
+      "description": "إدارة الإعدادات والتكوين المركزي",
+      "status": "built",
+      "dependencies": [],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "zk-tls",
+      "crate": "zk-tls",
+      "path": "zk-tls",
+      "layer": "layer_2_stealth",
+      "description": "بروتوكول ZK-TLS attestation لجلب البيانات وإثباتها دون كشف المفاتيح",
+      "status": "built",
+      "dependencies": [],
+      "profit_contribution": "data_integrity",
+      "activation": "manual"
+    },
+    {
+      "id": "flash-loan",
+      "crate": "flash-loan",
+      "path": "flash-loan",
+      "layer": "layer_3_capital",
+      "description": "محرك الفلاش لون الرئيسي (المرتبط بذراع التنفيذ /api/v1/flash-loan/*)",
+      "status": "built_running",
+      "dependencies": ["core", "arbitrage"],
+      "profit_contribution": "direct",
+      "activation": "default"
+    },
+    {
+      "id": "flash-loan-v2",
+      "crate": "flash-loan-v2",
+      "path": "flash-loan-v2",
+      "layer": "layer_3_capital",
+      "description": "محرك الفلاش لون الجيل الثاني",
+      "status": "built",
+      "dependencies": ["flash-loan"],
+      "profit_contribution": "direct",
+      "activation": "default"
+    },
+    {
+      "id": "arbitrage",
+      "crate": "arbitrage",
+      "path": "arbitrage",
+      "layer": "layer_3_capital",
+      "description": "محرك الـ Arbitrage الأساسي (RPC pool، أوامر، فرص)",
+      "status": "built_running",
+      "dependencies": ["core"],
+      "profit_contribution": "direct",
+      "activation": "default"
+    },
+    {
+      "id": "cross-venue-arb",
+      "crate": "cross-venue-arb",
+      "path": "cross-venue-arb",
+      "layer": "layer_3_capital",
+      "description": "محرك الـ Arbitrage عبر المنصات المتعددة",
+      "status": "built",
+      "dependencies": ["arbitrage", "exchange-adapters"],
+      "profit_contribution": "direct",
+      "activation": "env:CROSS_VENUE_ENABLED"
+    },
+    {
+      "id": "super-arb",
+      "crate": "super-arb",
+      "path": "super-arb",
+      "layer": "layer_3_capital",
+      "description": "محرك السوبر Arbitrage (strategies: flash/cv/mev/jit/staking/stat)",
+      "status": "built_running",
+      "dependencies": ["arbitrage", "flash-loan"],
+      "profit_contribution": "direct",
+      "activation": "env:SUPER_ARB_ENABLED"
+    },
+    {
+      "id": "fusion-matrix",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/matrix_engine.rs",
+      "layer": "layer_3_capital",
+      "description": "محرك المصفوفة الهجينة (FX/Gold/Crypto) — اربيتراج إحصائي عبر 5+ وسطاء مع تنفيذ ذري (<50µs)، تخفي ذكي (Proxy Partitioning + Micro-Jitter)، وإعادة موازنة ديناميكية للرافعة المالية. أرباح تتدفق إلى الخزانة السيادية مع ZK-Proof لكل صفقة.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge", "fiat-offramp", "exchange-adapters"],
+      "profit_contribution": "direct",
+      "activation": "env:FUSION_MATRIX_ENABLED"
+    },
+    {
+      "id": "polymorphic-kernel",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/polymorphic_kernel.rs",
+      "layer": "layer_5_brain",
+      "description": "النواة الإدراكية متعددة الأشكال (Polymorphic Kernel): توليد معادلات ألفا رياضية جديدة باستخدام Symbolic Regression، مطاردة واستباق روبوتات المنافسين في الميمبول (Pre-Cognitive Front-Running)، انحناء الجاذبية السعرية (Spread Gravity Bending)، وتوليد براهين ZK-Safety قبل الـ Hot-Swap.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge"],
+      "profit_contribution": "alpha_generation",
+      "activation": "default"
+    },
+    {
+      "id": "institutional-gateway",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/institutional_gateway.rs",
+      "layer": "layer_3_capital",
+      "description": "بوابة التوجيه الأعمى المؤسسي (Institutional Blind Router & Gateway): تتيح لكبار المؤسسات وصناديق التحوط ربط أنظمتها (Citadel, Jane Street) لاستقبال النوايا الاستثمارية (Intents)، تنفيذها سرا عبر النواة الإدراكية والـ Fusion Matrix، استخراج Alpha Spread خفي كعمولة سيادية، وإصدار براهين ZK-Best Execution توافقية MiFID II / SEC.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge", "polymorphic-kernel", "fusion-matrix"],
+      "profit_contribution": "institutional_alpha_fees",
+      "activation": "default"
+    },
+    {
+      "id": "disaster-recovery",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/disaster_recovery.rs",
+      "layer": "layer_1_core",
+      "description": "نظام التعافي المتعدد المناطق (Multi-Region Disaster Recovery): مراقبة صحية مباشرة لكل الأقمار الصناعية، تحويل تلقائي (Auto-Failover) بين 5 مناطق جغرافية، تتبع حالة التزامن (Sync Status)، حماية الكوارث مع Quorum فعال.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge"],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "cex-arb",
+      "crate": "cex-arb",
+      "path": "cex-arb",
+      "layer": "layer_3_capital",
+      "description": "محرك الـ Arbitrage على المنصات المركزية",
+      "status": "built",
+      "dependencies": ["exchange-adapters"],
+      "profit_contribution": "direct",
+      "activation": "manual"
+    },
+    {
+      "id": "mev-protection",
+      "crate": "mev-protection",
+      "path": "mev-protection",
+      "layer": "layer_2_stealth",
+      "description": "حماية من الـ MEV و Front-Running + محرك استخراج MEV (مهبط الدوائر القصيرة)",
+      "status": "built_running",
+      "dependencies": ["core"],
+      "profit_contribution": "protective",
+      "activation": "env:MEV_ENABLED"
+    },
+    {
+      "id": "mev-engine-v2",
+      "crate": "mev-engine-v2",
+      "path": "mev-engine-v2",
+      "layer": "layer_3_capital",
+      "description": "محرك MEV الجيل الثاني (استخراج + حماية)",
+      "status": "built",
+      "dependencies": ["mev-protection"],
+      "profit_contribution": "direct",
+      "activation": "manual"
+    },
+    {
+      "id": "market-making",
+      "crate": "market-making",
+      "path": "market-making",
+      "layer": "layer_3_capital",
+      "description": "محرك صناعة السوق (Market Making)",
+      "status": "built",
+      "dependencies": ["core", "exchange-adapters"],
+      "profit_contribution": "direct",
+      "activation": "manual"
+    },
+    {
+      "id": "inventory-manager",
+      "crate": "inventory-manager",
+      "path": "inventory-manager",
+      "layer": "layer_3_capital",
+      "description": "إدارة المخزون والتوازن بين الأصول",
+      "status": "built",
+      "dependencies": ["market-making"],
+      "profit_contribution": "indirect",
+      "activation": "manual"
+    },
+    {
+      "id": "engine-coordinator",
+      "crate": "engine-coordinator",
+      "path": "engine-coordinator",
+      "layer": "layer_4_mesh",
+      "description": "منسق المحركات (EngineId: FlashLoan, MEV, CrossVenue, SuperArb, DarkPoolBridge...)",
+      "status": "built",
+      "dependencies": ["arbitrage", "flash-loan", "mev-protection", "cross-venue-arb", "super-arb"],
+      "profit_contribution": "orchestration",
+      "activation": "env:COORDINATOR_ENABLED"
+    },
+    {
+      "id": "exchange-adapters",
+      "crate": "exchange-adapters",
+      "path": "exchange-adapters",
+      "layer": "layer_4_mesh",
+      "description": "محولات المنصات والاتصال بالبورصات",
+      "status": "built",
+      "dependencies": ["core"],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "state-radar",
+      "crate": "state-radar",
+      "path": "state-radar",
+      "layer": "layer_4_mesh",
+      "description": "رادار الحالة (مراقبة الشبكة والـ mempool)",
+      "status": "built_running",
+      "dependencies": ["core"],
+      "profit_contribution": "sensing",
+      "activation": "default"
+    },
+    {
+      "id": "behavioral-graph",
+      "crate": "behavioral-graph",
+      "path": "behavioral-graph",
+      "layer": "layer_4_mesh",
+      "description": "الرسم البياني السلوكي (تحليل سلوك المشاركين)",
+      "status": "built",
+      "dependencies": ["state-radar"],
+      "profit_contribution": "sensing",
+      "activation": "default"
+    },
+    {
+      "id": "capital-flow",
+      "crate": "capital-flow",
+      "path": "capital-flow",
+      "layer": "layer_3_capital",
+      "description": "خريطة التدفق المالي وتوجيه السيولة بين القطاعات",
+      "status": "built",
+      "dependencies": ["state-radar", "behavioral-graph"],
+      "profit_contribution": "rebalancing",
+      "activation": "default"
+    },
+    {
+      "id": "chaos",
+      "crate": "chaos",
+      "path": "chaos",
+      "layer": "layer_5_brain",
+      "description": "محرك الفوضى (اختبار التحمل والطفرات)",
+      "status": "built",
+      "dependencies": ["core"],
+      "profit_contribution": "testing",
+      "activation": "manual"
+    },
+    {
+      "id": "integration",
+      "crate": "integration",
+      "path": "integration",
+      "layer": "layer_5_brain",
+      "description": "محرك التكامل (EventBus، HealthAggregator، ServiceMesh، Expansion bridge)",
+      "status": "built_running",
+      "dependencies": ["state-radar", "behavioral-graph", "capital-flow"],
+      "profit_contribution": "orchestration",
+      "activation": "default"
+    },
+    {
+      "id": "F-compliance",
+      "crate": "F-compliance",
+      "path": "F-compliance",
+      "layer": "layer_2_stealth",
+      "description": "الامتثال التنظيمي (ZK-KYC، الإبلاغ)",
+      "status": "built",
+      "dependencies": [],
+      "profit_contribution": "compliance",
+      "activation": "manual"
+    },
+    {
+      "id": "ai-ceo-bridge",
+      "crate": "expansion_modules/ai_ceo_bridge",
+      "path": "expansion_modules/ai_ceo_bridge",
+      "layer": "layer_5_brain",
+      "description": "العقل الذاتي والمدير التنفيذي — WASM JIT + Symbolic Regression + Pre-Cognitive Front-Running + Institutional Blind Router",
+      "status": "built",
+      "dependencies": ["integration", "state-radar", "capital-flow"],
+      "profit_contribution": "management",
+      "activation": "manual"
+    },
+    {
+      "id": "wallet-manager",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/wallet_manager.rs",
+      "layer": "layer_1_core",
+      "description": "مدير المحافظ المتعددة السلاسل (Multi-Chain Wallet Manager): Solana + EVM signing، جلب أرصدة حقيقية من RPC، إدارة المفاتيح الآمنة، تتبع المعاملات.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge"],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "binance-client",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/binance_client.rs",
+      "layer": "layer_3_capital",
+      "description": "عميل Binance الإنتاجي مع HMAC-SHA256 signing: أوامر حقيقية (Market/Limit)، جلب الأرصدة، إلغاء الأوامر، مزامنة الوقت.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge", "wallet-manager"],
+      "profit_contribution": "direct",
+      "activation": "env:BINANCE_ENABLED"
+    },
+    {
+      "id": "jupiter-client",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/jupiter_client.rs",
+      "layer": "layer_3_capital",
+      "description": "عميل Jupiter V6 الإنتاجي: Quote مع Price Impact Guard + retry، transaction signing، submission إلى Solana RPC، Jupiter Price API مع caching.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge", "wallet-manager"],
+      "profit_contribution": "direct",
+      "activation": "env:JUPITER_ENABLED"
+    },
+    {
+      "id": "ws-feeds",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/ws_feeds.rs",
+      "layer": "layer_1_core",
+      "description": "مصدر البيانات اللحظية (Real-Time Price Feeds): Binance REST polling + Jupiter Price API مع PriceCache thread-safe وstaleness detection.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge"],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "rate-limiter",
+      "crate": "ai-ceo-bridge",
+      "path": "expansion_modules/ai_ceo_bridge/src/rate_limiter.rs",
+      "layer": "layer_1_core",
+      "description": "محدد المعدل الإنتاجي (Production Rate Limiter): Token bucket per-service (Jupiter/Binance/CoinGecko/Solana RPC) مع RetryExecutor مع exponential backoff.",
+      "status": "built",
+      "dependencies": ["ai-ceo-bridge"],
+      "profit_contribution": "infrastructure",
+      "activation": "default"
+    },
+    {
+      "id": "expansion-integration",
+      "crate": "expansion_modules/integration",
+      "path": "expansion_modules/integration",
+      "layer": "layer_5_brain",
+      "description": "خادم الـ Expansion Modules (HTTP 8080 / gRPC 9090) + AutoTrader + optimizer",
+      "status": "built_running",
+      "dependencies": ["ai-ceo-bridge", "state-radar", "behavioral-graph", "capital-flow"],
+      "profit_contribution": "management",
+      "activation": "manual"
+    }
+  ],
+  "runners": [
+    {
+      "id": "api-server",
+      "binary": "target/release/api-server",
+      "source": "src/main_new.rs",
+      "port": 3001,
+      "status": "running",
+      "engines_hosted": ["core", "arbitrage", "flash-loan", "super-arb", "mev-protection", "state-radar", "integration"]
+    },
+    {
+      "id": "expansion-server",
+      "binary": "expansion_modules/target/release/expansion-server",
+      "source": "expansion_modules/integration/src/main.rs",
+      "ports": "8080 (HTTP) / 9090 (gRPC)",
+      "status": "running_manual",
+      "engines_hosted": ["ai-ceo-bridge", "expansion-integration"]
+    },
+    {
+      "id": "matching-engine",
+      "binary": "target/release/matching-engine",
+      "source": "src/main.rs",
+      "port": 8080,
+      "status": "legacy_backup",
+      "engines_hosted": []
+    }
+  ],
+  "known_gaps": [
+    {
+      "id": "market-data-providers",
+      "severity": "resolved",
+      "description": "بيانات السوق اللحظية: ws_feeds.rs يوفر Binance REST polling + Jupiter Price API مع PriceCache وstaleness detection",
+      "impact": "RESOLVED — live prices available"
+    },
+    {
+      "id": "real-chain-execution",
+      "severity": "resolved",
+      "description": "تنفيذ المعاملات: wallet_manager.rs يوفر multi-chain signing، jupiter_client.rs يدعم real swap submission، binance_client.rs يدعم real order placement مع HMAC-SHA256",
+      "impact": "RESOLVED — real execution available"
+    },
+    {
+      "id": "ai-ceo-restructure",
+      "severity": "in_progress",
+      "description": "هيكلة ai_ceo_bridge (research_engine, code_generator, hot_swapper, evaluator)",
+      "impact": "self-evolution not active yet"
+    },
+    {
+      "id": "ghost-pool-standalone",
+      "severity": "info",
+      "description": "ghost-pool مشروع مستقل (own workspace) ليس عضوًا في الـ workspace الرئيسي، مع أن engine-coordinator يشير لـ EngineId::DarkPoolBridge",
+      "impact": "dark pool separate"
+    },
+    {
+      "id": "api-keys-config",
+      "severity": "critical",
+      "description": "يجب تكوين BINANCE_API_KEY, BINANCE_SECRET_KEY, SOLANA_PRIVATE_KEY, EVM_PRIVATE_KEY في env variables",
+      "impact": "cannot trade without keys"
+    }
+  ]
+}

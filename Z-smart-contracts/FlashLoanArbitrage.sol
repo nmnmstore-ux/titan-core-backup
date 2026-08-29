@@ -163,8 +163,8 @@ contract FlashLoanArbitrage {
             revert InsufficientProfit(profit, minOutAfterFees);
         }
 
+        // Aave pulls the repayment itself via transferFrom after the callback.
         IERC20(asset).approve(pool, repay);
-        require(IERC20(asset).transfer(pool, repay), "repay transfer failed");
 
         if (recipient != address(0) && profit > 0) {
             require(IERC20(asset).transfer(recipient, profit), "profit transfer failed");
